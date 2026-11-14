@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TailLAN</title>
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand">
+    <img src="icon.svg" alt="" width="30" height="30">
+    <div>
+      <div class="brand-name">TailLAN</div>
+      <div class="brand-tag">Play together. No port forwarding.</div>
+    </div>
+  </div>
+  <nav id="nav" aria-label="Sections">
+    <button data-view="play" class="active">Play</button>
+    <button data-view="games">Games</button>
+    <button data-view="tools">Tools</button>
+    <button data-view="help">Help</button>
+  </nav>
+  <div id="who" class="who"></div>
+</header>
+<main id="main" tabindex="-1"></main>
+<div id="toasts" aria-live="polite"></div>
+<div id="offline" class="offline" hidden>TailLAN isn't running any more. Start it again to keep playing.</div>
+<script src="app.js"></script>
+</body>
+</html>

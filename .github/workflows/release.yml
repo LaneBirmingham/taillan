@@ -1,0 +1,27 @@
+name: Release
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: Test
+        run: go test -tags "$(cat build-tags.txt)" -short ./...
+      - name: Build
+        run: >-
+          make release GO=go
+          VERSION=${{ github.ref_name }}
+          DOWNLOAD_URL=https://github.com/${{ github.repository }}/releases/latest
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${{ github.ref_name }}" dist/* --generate-notes --title "TailLAN ${{ github.ref_name }}"

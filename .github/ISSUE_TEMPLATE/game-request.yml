@@ -1,0 +1,22 @@
+name: Game request
+description: Ask for a game to be built in (or share ports you found)
+labels: [game]
+body:
+  - type: input
+    id: game
+    attributes:
+      label: Game
+      placeholder: Space Haven
+    validations:
+      required: true
+  - type: textarea
+    id: ports
+    attributes:
+      label: Ports, if you know them
+      description: "`taillan detect --watch` while hosting shows them. A link to the game's server docs is great too."
+      placeholder: 7777/udp, 27015/tcp
+  - type: textarea
+    id: how
+    attributes:
+      label: How do players host and join?
+      description: Dedicated server or in-game lobby? Where do friends type the address?

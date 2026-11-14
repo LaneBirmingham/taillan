@@ -1,0 +1,35 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: Vet
+        if: runner.os == 'Linux'
+        run: make vet GO=go
+      - name: Third-party notices up to date
+        if: runner.os == 'Linux'
+        run: make notices GO=go && git diff --exit-code THIRD_PARTY_NOTICES.txt
+      - name: Test
+        shell: bash
+        # The host/join round trip uses tailcat's public (rate-limited)
+        # relays, so it runs on one OS only; -short skips it elsewhere.
+        run: go test -tags "$(cat build-tags.txt)" -count=1 ${{ runner.os != 'Linux' && '-short' || '' }} ./...
+      - name: Cross-compile
+        if: runner.os == 'Linux'
+        run: make release GO=go

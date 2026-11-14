@@ -1,0 +1,34 @@
+{
+  "$schema": "../docs/game.schema.json",
+  "id": "rust",
+  "name": "Rust (community server)",
+  "ports": [
+    {
+      "port": 28015,
+      "proto": "udp",
+      "label": "Game"
+    },
+    {
+      "port": 28016,
+      "proto": "tcp",
+      "label": "RCON"
+    }
+  ],
+  "connect": "client.connect {{host}}:{{port}}",
+  "host": {
+    "steps": [
+      "Run RustDedicated with +server.port 28015.",
+      "Click Start sharing and send the invite code to your friends."
+    ]
+  },
+  "join": {
+    "steps": [
+      "In Rust, press F1 to open the console.",
+      "Type: {{connect}}"
+    ]
+  },
+  "tags": [
+    "survival",
+    "fps"
+  ]
+}

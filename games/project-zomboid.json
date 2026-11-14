@@ -1,0 +1,38 @@
+{
+  "$schema": "../docs/game.schema.json",
+  "id": "project-zomboid",
+  "name": "Project Zomboid",
+  "aliases": [
+    "zomboid",
+    "pz"
+  ],
+  "ports": [
+    {
+      "port": 16261,
+      "end": 16262,
+      "proto": "udp",
+      "label": "Game"
+    }
+  ],
+  "host": {
+    "steps": [
+      "Host → Manage settings → Start (or run the dedicated server). Default port is 16261.",
+      "Click Start sharing and send the invite code to your friends."
+    ]
+  },
+  "join": {
+    "steps": [
+      "Join → add a favorite server.",
+      "IP: {{host}}  Port: {{port}}  (use the server password if the host set one)"
+    ]
+  },
+  "links": [
+    {
+      "title": "Dedicated server guide",
+      "url": "https://pzwiki.net/wiki/Dedicated_server"
+    }
+  ],
+  "tags": [
+    "survival"
+  ]
+}

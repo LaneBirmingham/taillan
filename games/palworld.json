@@ -1,0 +1,33 @@
+{
+  "$schema": "../docs/game.schema.json",
+  "id": "palworld",
+  "name": "Palworld (dedicated server)",
+  "ports": [
+    {
+      "port": 8211,
+      "proto": "udp",
+      "label": "Game"
+    }
+  ],
+  "host": {
+    "steps": [
+      "Run the Palworld dedicated server (UDP 8211).",
+      "Click Start sharing and send the invite code to your friends."
+    ]
+  },
+  "join": {
+    "steps": [
+      "Join Multiplayer Game (Dedicated Server).",
+      "At the bottom, type {{connect}} and press Connect."
+    ]
+  },
+  "links": [
+    {
+      "title": "Dedicated server docs",
+      "url": "https://docs.palworldgame.com/"
+    }
+  ],
+  "tags": [
+    "survival"
+  ]
+}

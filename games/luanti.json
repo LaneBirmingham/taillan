@@ -1,0 +1,29 @@
+{
+  "$schema": "../docs/game.schema.json",
+  "id": "luanti",
+  "name": "Luanti (Minetest)",
+  "aliases": [
+    "minetest"
+  ],
+  "ports": [
+    {
+      "port": 30000,
+      "proto": "udp",
+      "label": "Game"
+    }
+  ],
+  "host": {
+    "steps": [
+      "Start Game → tick Host Server → Host Game (port 30000).",
+      "Click Start sharing and send the invite code to your friends."
+    ]
+  },
+  "join": {
+    "steps": [
+      "Join Game → Address: {{host}}  Port: {{port}} → Login."
+    ]
+  },
+  "tags": [
+    "sandbox"
+  ]
+}

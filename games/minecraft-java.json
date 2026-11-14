@@ -1,0 +1,47 @@
+{
+  "$schema": "../docs/game.schema.json",
+  "id": "minecraft-java",
+  "name": "Minecraft: Java Edition",
+  "aliases": [
+    "minecraft",
+    "mc",
+    "java"
+  ],
+  "ports": [
+    {
+      "port": 25565,
+      "proto": "tcp",
+      "label": "Game",
+      "ask": "Port your world or server is on (Open to LAN prints it in chat)",
+      "lan": true
+    }
+  ],
+  "connect": "{{host}}:{{port}}",
+  "host": {
+    "steps": [
+      "Single-player world: press Esc → Open to LAN → Start LAN World. TailLAN spots the port automatically.",
+      "Or run a Minecraft server (it listens on port 25565 by default).",
+      "Click Start sharing and send the invite code to your friends."
+    ]
+  },
+  "join": {
+    "steps": [
+      "Open Minecraft (same version as {{hostname}}) → Multiplayer.",
+      "{{hostname}}'s world should appear under LAN games. If not: Direct Connection → {{connect}}"
+    ]
+  },
+  "helpers": [
+    "minecraft-lan"
+  ],
+  "notes": "Everyone needs the same Minecraft version. Modded games need the same mods.",
+  "links": [
+    {
+      "title": "Run a Minecraft server",
+      "url": "https://www.minecraft.net/en-us/download/server"
+    }
+  ],
+  "tags": [
+    "sandbox",
+    "survival"
+  ]
+}

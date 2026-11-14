@@ -1,0 +1,32 @@
+{
+  "$schema": "../docs/game.schema.json",
+  "id": "dont-starve-together",
+  "name": "Don't Starve Together (dedicated server)",
+  "aliases": [
+    "dst",
+    "dont starve"
+  ],
+  "ports": [
+    {
+      "port": 10999,
+      "proto": "udp",
+      "label": "Master shard"
+    }
+  ],
+  "connect": "c_connect(\"{{host}}\", {{port}})",
+  "host": {
+    "steps": [
+      "Run the DST dedicated server (master shard on UDP 10999).",
+      "Click Start sharing and send the invite code to your friends."
+    ]
+  },
+  "join": {
+    "steps": [
+      "On the main menu, press ~ to open the console.",
+      "Type: {{connect}}"
+    ]
+  },
+  "tags": [
+    "survival"
+  ]
+}

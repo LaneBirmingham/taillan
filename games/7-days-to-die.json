@@ -1,0 +1,37 @@
+{
+  "$schema": "../docs/game.schema.json",
+  "id": "7-days-to-die",
+  "name": "7 Days to Die",
+  "aliases": [
+    "7dtd",
+    "seven days"
+  ],
+  "ports": [
+    {
+      "port": 26900,
+      "proto": "tcp",
+      "label": "Game"
+    },
+    {
+      "port": 26900,
+      "end": 26903,
+      "proto": "udp",
+      "label": "Game"
+    }
+  ],
+  "host": {
+    "steps": [
+      "Start a co-op game or run the dedicated server (port 26900).",
+      "Click Start sharing and send the invite code to your friends."
+    ]
+  },
+  "join": {
+    "steps": [
+      "Join a game → Connect to IP.",
+      "IP: {{host}}  Port: {{port}}"
+    ]
+  },
+  "tags": [
+    "survival"
+  ]
+}

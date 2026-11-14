@@ -1,0 +1,28 @@
+{
+  "$schema": "../docs/game.schema.json",
+  "id": "vintage-story",
+  "name": "Vintage Story",
+  "ports": [
+    {
+      "port": 42420,
+      "proto": "both",
+      "label": "Game"
+    }
+  ],
+  "host": {
+    "steps": [
+      "Run the Vintage Story server, or open your single-player world to multiplayer (port 42420).",
+      "Click Start sharing and send the invite code to your friends."
+    ]
+  },
+  "join": {
+    "steps": [
+      "Multiplayer → Add server.",
+      "Address: {{connect}}"
+    ]
+  },
+  "tags": [
+    "survival",
+    "sandbox"
+  ]
+}

@@ -1,0 +1,43 @@
+{
+  "$schema": "../docs/game.schema.json",
+  "id": "minecraft-bedrock",
+  "name": "Minecraft: Bedrock Edition (PC)",
+  "aliases": [
+    "minecraft",
+    "bedrock",
+    "mcpe",
+    "windows 10 edition"
+  ],
+  "ports": [
+    {
+      "port": 19132,
+      "proto": "udp",
+      "label": "Game (IPv4)",
+      "lan": true
+    }
+  ],
+  "connect": "{{host}}",
+  "host": {
+    "steps": [
+      "Run Bedrock Dedicated Server (it listens on UDP 19132), or open your world to LAN players in game settings.",
+      "Click Start sharing and send the invite code to your friends."
+    ]
+  },
+  "join": {
+    "steps": [
+      "Open Minecraft → Play → Servers → Add Server.",
+      "Server address: {{host}}  Port: {{port}}"
+    ]
+  },
+  "notes": "Works for PC players. Older Windows (UWP) builds may block connections to your own machine; if joining fails, update Minecraft. Consoles can't use TailLAN.",
+  "links": [
+    {
+      "title": "Bedrock Dedicated Server",
+      "url": "https://www.minecraft.net/en-us/download/server/bedrock"
+    }
+  ],
+  "tags": [
+    "sandbox",
+    "survival"
+  ]
+}

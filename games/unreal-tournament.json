@@ -1,0 +1,35 @@
+{
+  "$schema": "../docs/game.schema.json",
+  "id": "unreal-tournament",
+  "name": "Unreal Tournament (99 / 2004)",
+  "aliases": [
+    "ut99",
+    "ut2004",
+    "ut2k4",
+    "unreal"
+  ],
+  "ports": [
+    {
+      "port": 7777,
+      "end": 7778,
+      "proto": "udp",
+      "label": "Game + query"
+    }
+  ],
+  "connect": "open {{host}}:{{port}}",
+  "host": {
+    "steps": [
+      "Host Game / Start Server with the default port 7777.",
+      "Click Start sharing and send the invite code to your friends."
+    ]
+  },
+  "join": {
+    "steps": [
+      "Open the console with ~ and type: {{connect}}"
+    ]
+  },
+  "tags": [
+    "fps",
+    "retro"
+  ]
+}

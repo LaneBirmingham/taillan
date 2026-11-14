@@ -1,0 +1,34 @@
+{
+  "$schema": "../docs/game.schema.json",
+  "id": "stardew-valley",
+  "name": "Stardew Valley",
+  "aliases": [
+    "stardew"
+  ],
+  "ports": [
+    {
+      "port": 24642,
+      "proto": "udp",
+      "label": "Game",
+      "samePort": true
+    }
+  ],
+  "connect": "{{host}}",
+  "host": {
+    "steps": [
+      "Co-op → Host (or load a co-op farm) and make sure there are empty cabins.",
+      "Click Start sharing and send the invite code to your friends."
+    ]
+  },
+  "join": {
+    "steps": [
+      "Co-op → Join → Enter IP...",
+      "Type {{host}} and pick an empty cabin."
+    ]
+  },
+  "notes": "Stardew's built-in invite codes (Steam/GOG) also work; TailLAN helps when those fail or players are on different stores. The joiner must not be hosting Stardew themselves (port 24642 must be free).",
+  "tags": [
+    "farming",
+    "cozy"
+  ]
+}

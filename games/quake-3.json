@@ -1,0 +1,34 @@
+{
+  "$schema": "../docs/game.schema.json",
+  "id": "quake-3",
+  "name": "Quake III Arena / ioquake3 / OpenArena",
+  "aliases": [
+    "quake",
+    "q3",
+    "openarena",
+    "ioq3"
+  ],
+  "ports": [
+    {
+      "port": 27960,
+      "proto": "udp",
+      "label": "Game"
+    }
+  ],
+  "connect": "connect {{host}}:{{port}}",
+  "host": {
+    "steps": [
+      "Multiplayer → Create (or run a dedicated server on port 27960).",
+      "Click Start sharing and send the invite code to your friends."
+    ]
+  },
+  "join": {
+    "steps": [
+      "Open the console with ~ and type: {{connect}}"
+    ]
+  },
+  "tags": [
+    "fps",
+    "retro"
+  ]
+}

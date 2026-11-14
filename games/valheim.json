@@ -1,0 +1,35 @@
+{
+  "$schema": "../docs/game.schema.json",
+  "id": "valheim",
+  "name": "Valheim",
+  "ports": [
+    {
+      "port": 2456,
+      "end": 2457,
+      "proto": "udp",
+      "label": "Game + query"
+    }
+  ],
+  "host": {
+    "steps": [
+      "Run the Valheim dedicated server (default ports 2456-2457) with crossplay turned off.",
+      "Click Start sharing and send the invite code to your friends."
+    ]
+  },
+  "join": {
+    "steps": [
+      "Start Game → pick a character → Join Game → Add server (Join IP).",
+      "Address: {{connect}}"
+    ]
+  },
+  "notes": "Direct IP joining only works with crossplay off. Worlds hosted from the in-game menu use Steam invites instead and don't need TailLAN.",
+  "links": [
+    {
+      "title": "Valheim dedicated server guide",
+      "url": "https://valheim.fandom.com/wiki/Dedicated_servers"
+    }
+  ],
+  "tags": [
+    "survival"
+  ]
+}

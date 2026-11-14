@@ -1,0 +1,34 @@
+name: Bug report
+description: Something doesn't work
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What you did, what you expected, and what you saw instead.
+    validations:
+      required: true
+  - type: input
+    id: game
+    attributes:
+      label: Game
+  - type: input
+    id: os
+    attributes:
+      label: OS and TailLAN version
+      description: "Help → About shows the version, or run `taillan version`."
+      placeholder: Windows 11, v0.1.0
+    validations:
+      required: true
+  - type: textarea
+    id: doctor
+    attributes:
+      label: Network check
+      description: "Output of Tools → Network check, or `taillan doctor`."
+      render: text
+  - type: textarea
+    id: log
+    attributes:
+      label: Activity log
+      description: Tools → Activity log → Copy. Remove invite codes (they start with TL1-) before posting.
+      render: text

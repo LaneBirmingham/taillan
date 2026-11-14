@@ -1,0 +1,39 @@
+{
+  "$schema": "../docs/game.schema.json",
+  "id": "satisfactory",
+  "name": "Satisfactory (dedicated server)",
+  "ports": [
+    {
+      "port": 7777,
+      "proto": "both",
+      "label": "Game + API"
+    },
+    {
+      "port": 8888,
+      "proto": "tcp",
+      "label": "Reliable messaging"
+    }
+  ],
+  "host": {
+    "steps": [
+      "Run the Satisfactory dedicated server (ports 7777 and 8888).",
+      "Click Start sharing and send the invite code to your friends."
+    ]
+  },
+  "join": {
+    "steps": [
+      "Main menu → Server Manager → Add Server.",
+      "Address: {{host}}  Port: {{port}}"
+    ]
+  },
+  "notes": "If 7777 is busy on your machine, TailLAN moves the game to another port and shows it here; enter that port in Server Manager.",
+  "links": [
+    {
+      "title": "Dedicated server guide",
+      "url": "https://satisfactory.wiki.gg/wiki/Dedicated_servers"
+    }
+  ],
+  "tags": [
+    "factory"
+  ]
+}

@@ -1,0 +1,27 @@
+{
+  "$schema": "../docs/game.schema.json",
+  "id": "xonotic",
+  "name": "Xonotic",
+  "ports": [
+    {
+      "port": 26000,
+      "proto": "udp",
+      "label": "Game"
+    }
+  ],
+  "connect": "connect {{host}}:{{port}}",
+  "host": {
+    "steps": [
+      "Multiplayer → Create → Start multiplayer (port 26000).",
+      "Click Start sharing and send the invite code to your friends."
+    ]
+  },
+  "join": {
+    "steps": [
+      "Open the console with Shift+Esc and type: {{connect}}"
+    ]
+  },
+  "tags": [
+    "fps"
+  ]
+}

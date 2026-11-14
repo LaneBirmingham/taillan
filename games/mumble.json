@@ -1,0 +1,32 @@
+{
+  "$schema": "../docs/game.schema.json",
+  "id": "mumble",
+  "name": "Mumble voice chat",
+  "aliases": [
+    "voice",
+    "murmur"
+  ],
+  "ports": [
+    {
+      "port": 64738,
+      "proto": "both",
+      "label": "Voice"
+    }
+  ],
+  "host": {
+    "steps": [
+      "Run a Mumble server (murmur), default port 64738.",
+      "Click Start sharing and send the invite code to your friends."
+    ]
+  },
+  "join": {
+    "steps": [
+      "In Mumble: Server → Connect → Add New.",
+      "Address: {{host}}  Port: {{port}}"
+    ]
+  },
+  "notes": "Handy for voice alongside a game: in the Host screen, add 64738 to the game's extra ports to share both with one invite.",
+  "tags": [
+    "voice"
+  ]
+}

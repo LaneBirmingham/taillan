@@ -1,0 +1,46 @@
+{
+  "$schema": "../docs/game.schema.json",
+  "id": "source-engine",
+  "name": "Source engine games (Garry's Mod, TF2, CS:S, L4D2, HL2:DM)",
+  "aliases": [
+    "gmod",
+    "garrys mod",
+    "tf2",
+    "team fortress",
+    "counter-strike",
+    "css",
+    "left 4 dead",
+    "l4d2",
+    "srcds"
+  ],
+  "ports": [
+    {
+      "port": 27015,
+      "proto": "both",
+      "label": "Game + RCON"
+    }
+  ],
+  "connect": "connect {{host}}:{{port}}",
+  "host": {
+    "steps": [
+      "Start a listen server from the game's Create Server menu, or run srcds (port 27015).",
+      "Click Start sharing and send the invite code to your friends."
+    ]
+  },
+  "join": {
+    "steps": [
+      "Enable the developer console (Options → Keyboard → Advanced) and open it with ~.",
+      "Type: {{connect}}"
+    ]
+  },
+  "links": [
+    {
+      "title": "Source Dedicated Server",
+      "url": "https://developer.valvesoftware.com/wiki/Source_Dedicated_Server"
+    }
+  ],
+  "tags": [
+    "fps",
+    "sandbox"
+  ]
+}

@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "taillan-game.schema.json",
+  "title": "TailLAN game profile",
+  "description": "Ports and instructions for sharing one game with TailLAN. See docs/adding-a-game.md.",
+  "type": "object",
+  "required": ["id", "name", "ports"],
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {"type": "string"},
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{0,62}$",
+      "description": "Stable lowercase id; also the file name (<id>.json)."
+    },
+    "name": {"type": "string", "minLength": 1, "description": "Display name."},
+    "aliases": {"type": "array", "items": {"type": "string"}, "description": "Extra search terms."},
+    "ports": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["port", "proto"],
+        "additionalProperties": false,
+        "properties": {
+          "port": {"type": "integer", "minimum": 1, "maximum": 65535},
+          "end": {"type": "integer", "minimum": 1, "maximum": 65535, "description": "Inclusive end of a port range."},
+          "proto": {"enum": ["tcp", "udp", "both"]},
+          "label": {"type": "string", "description": "What the port is for: Game, Query, RCON..."},
+          "ask": {"type": "string", "description": "Shows the host an input (with this label) for where the game really listens, for ports that change per session."},
+          "samePort": {"type": "boolean", "description": "Joiners must use exactly this port (the game has no port field)."},
+          "lan": {"type": "boolean", "description": "Joiners listen on all interfaces (local connections only) so LAN discovery can work."}
+        }
+      }
+    },
+    "connect": {
+      "type": "string",
+      "description": "What joiners type in the game. Placeholders: {{host}}, {{port}}, {{port2}}..., {{hostname}}. Default {{host}}:{{port}}."
+    },
+    "host": {"$ref": "#/$defs/guide", "description": "Steps for the hosting player."},
+    "join": {"$ref": "#/$defs/guide", "description": "Steps for joining players; may use {{connect}} and the connect placeholders."},
+    "helpers": {"type": "array", "items": {"type": "string"}, "description": "Built-in automations, e.g. minecraft-lan. See `taillan helpers`."},
+    "notes": {"type": "string"},
+    "links": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["title", "url"],
+        "additionalProperties": false,
+        "properties": {"title": {"type": "string"}, "url": {"type": "string", "pattern": "^https?://"}}
+      }
+    },
+    "tags": {"type": "array", "items": {"type": "string"}}
+  },
+  "$defs": {
+    "guide": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {"steps": {"type": "array", "items": {"type": "string"}}}
+    }
+  }
+}

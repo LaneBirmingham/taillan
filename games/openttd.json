@@ -1,0 +1,30 @@
+{
+  "$schema": "../docs/game.schema.json",
+  "id": "openttd",
+  "name": "OpenTTD",
+  "aliases": [
+    "transport tycoon"
+  ],
+  "ports": [
+    {
+      "port": 3979,
+      "proto": "both",
+      "label": "Game"
+    }
+  ],
+  "host": {
+    "steps": [
+      "Multiplayer → Start Server. Keep the default port 3979.",
+      "Click Start sharing and send the invite code to your friends."
+    ]
+  },
+  "join": {
+    "steps": [
+      "Multiplayer → Add Server.",
+      "Address: {{connect}}"
+    ]
+  },
+  "tags": [
+    "strategy"
+  ]
+}
