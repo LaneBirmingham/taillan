@@ -44,7 +44,7 @@ release: clean ## Cross-compile for every platform into dist/
 	  GOOS=$$os GOARCH=$$arch $(BUILD) -o dist/taillan-$$os-$$arch$$ext . || exit 1; \
 	done
 	cp LICENSE THIRD_PARTY_NOTICES.txt dist/
-	cd dist && (sha256sum * 2>/dev/null || shasum -a 256 *) > SHA256SUMS
+	cd dist && (sha256sum taillan-* LICENSE THIRD_PARTY_NOTICES.txt 2>/dev/null || shasum -a 256 taillan-* LICENSE THIRD_PARTY_NOTICES.txt) > SHA256SUMS
 	@ls -lh dist
 
 clean: ## Remove build output
