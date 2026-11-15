@@ -38,4 +38,15 @@ Only when JSON can't express it. See [docs/helpers.md](docs/helpers.md) and `int
 
 ## Commits
 
-Don't commit unless asked. Use [Conventional Commits](https://www.conventionalcommits.org/) (`feat:`, `fix:`, `docs:`, `feat!:` for breaking): release-please builds versions and the changelog from them. Commits carry only the configured git user: no AI co-author trailers or "generated with" footers.
+Don't commit unless asked. Commits carry only the configured git user: no AI co-author trailers or "generated with" footers.
+
+Releases are cut by release-please from commit titles on `main`, so every commit title (and PR title, which becomes the squash commit) must be a [Conventional Commit](https://www.conventionalcommits.org/). PRs here are often merged with a merge commit, which keeps each branch commit, so each commit on the branch counts, not just the PR title. A title that doesn't parse is silently left out of the changelog.
+
+- `feat:` new behaviour players or hosts notice (a new game is `feat(games): add Valheim`). Bumps the minor version.
+- `fix:` a bug fix, including a corrected game profile (`fix(games): ...`). Bumps the patch version.
+- `feat!:` or a `BREAKING CHANGE:` footer for incompatible changes (an invite older versions can't read, a removed flag or `TAILLAN_*` variable). Bumps the minor version until 1.0.
+- `docs:`, `test:`, `refactor:`, `ci:`, `build:`, `chore:` don't release on their own.
+- Optional scope is the area: `ui`, `games`, `helpers`, `session`, `invite`, `cli`, `server`, `docker`.
+- Write the subject for the changelog: lower case, imperative, what changed for the user (`feat(cli): add taillan kick`), not how.
+- One commit can carry several changelog entries: put extra `feat: ...` / `fix: ...` lines at the end of its body. A `Release-As: x.y.z` footer forces the next version.
+- Never edit `CHANGELOG.md` or `.release-please-manifest.json` by hand; the release PR updates them.
