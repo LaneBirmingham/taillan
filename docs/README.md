@@ -115,7 +115,7 @@ taillan licenses             licenses of TailLAN and its components
 ## Security
 
 - All game traffic is end-to-end encrypted by WireGuard (tailcat uses a fresh key per session and a pre-shared key inside the invite). Relays only see encrypted packets.
-- **The invite code is the key.** Anyone with it can connect while you share, so send it privately. Use **Lock room** once everyone's in, and **Remove** to kick someone for the rest of the session.
+- **The invite code is the key.** Anyone with it can connect while you share, so send it privately. Use **Lock room** once everyone's in. **Remove** kicks someone and locks the room, since anyone with the code could otherwise come back under a new identity.
 - Only the game's ports are reachable through the tunnel, and only to the address you chose (the host's own machine by default). Nothing else on your computer or network is exposed.
 - On joiners' machines, forwarded ports listen on `127.0.0.1` only. Ports a game marks `lan` (for LAN discovery) listen on all interfaces but accept connections only from the same computer, unless the joiner explicitly allows their LAN.
 - The UI is served on `127.0.0.1` and protected by a per-run secret, Host/Origin checks (against DNS rebinding and cross-site requests) and a strict Content Security Policy.

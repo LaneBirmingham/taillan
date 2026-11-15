@@ -1,7 +1,6 @@
 package session
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -23,10 +22,15 @@ import (
 )
 
 // JoinProfile combines an invite's game info with the local built-in
-// profile of the same game, if this TailLAN has one: ports and the
-// connect template always come from the invite (the host may have
-// customised them), while instructions, notes, links and helpers come
-// from the trusted local copy.
+// profile of the same game, if this TailLAN has one. Ports always come
+// from the invite. Built-in games travel without their steps and notes,
+// so those come from the local copy; whatever the invite does carry
+// (connect template, steps, notes, helpers) wins, because it is the
+// host's version of the game and may be customised. Links and tags
+// always come from the local copy, since links are clickable.
+//
+// Invite contents come from whoever sent the code: invite.Decode
+// bounds their size, and the UI only ever renders them as plain text.
 func JoinProfile(inv *invite.Invite, local *profile.Profile) (*profile.Profile, error) {
 	p, err := inv.Profile()
 	if err != nil {
@@ -94,8 +98,14 @@ type Join struct {
 	stopped     bool
 	ctl         net.Conn // current control connection, if any
 
-	localIPs atomic.Pointer[map[string]bool]
+	localIPs   atomic.Pointer[map[string]bool]
+	localIPsAt atomic.Int64 // unix nanos of the last refresh
 }
+
+// localIPsEvery limits how often a packet from an unknown address
+// makes us re-read this machine's addresses, so other devices on the
+// LAN can't keep us busy by flooding a "lan" port.
+const localIPsEvery = 2 * time.Second
 
 // StartJoin opens the local ports and starts connecting in the
 // background. It fails only for local problems (a port that must be
@@ -257,6 +267,7 @@ func (j *Join) refreshLocalIPs() {
 		}
 	}
 	j.localIPs.Store(&m)
+	j.localIPsAt.Store(time.Now().UnixNano())
 }
 
 // allowed reports whether a local connection may use a forward: one
@@ -267,6 +278,13 @@ func (j *Join) allowed(ip net.IP) bool {
 	}
 	if (*j.localIPs.Load())[ip.String()] {
 		return true
+	}
+	// Maybe one of our own addresses changed (new Wi-Fi), or it's
+	// another device on the LAN: re-check our addresses, but not on
+	// every packet.
+	last := j.localIPsAt.Load()
+	if time.Since(time.Unix(0, last)) < localIPsEvery || !j.localIPsAt.CompareAndSwap(last, time.Now().UnixNano()) {
+		return false
 	}
 	j.refreshLocalIPs()
 	return (*j.localIPs.Load())[ip.String()]
@@ -438,14 +456,10 @@ func (j *Join) controlOnce() (ended bool) {
 	)
 	go func() {
 		defer close(readErr)
-		r := bufio.NewReader(c)
-		for {
-			line, err := r.ReadBytes('\n')
-			if err != nil {
-				return
-			}
+		sc := newCtlScanner(c)
+		for sc.Scan() {
 			var m ctlMsg
-			if json.Unmarshal(line, &m) != nil {
+			if json.Unmarshal(sc.Bytes(), &m) != nil {
 				continue
 			}
 			mu.Lock()
@@ -454,7 +468,7 @@ func (j *Join) controlOnce() (ended bool) {
 			switch m.T {
 			case "welcome":
 				j.mu.Lock()
-				j.hostVersion = m.Version
+				j.hostVersion = clip(m.Version, 40)
 				j.mu.Unlock()
 				j.setPhase("connected", fmt.Sprintf("Connected to %s", hostLabel(j.cfg.Invite.HostName)))
 			case "pong":
@@ -468,7 +482,7 @@ func (j *Join) controlOnce() (ended bool) {
 				mu.Unlock()
 			case "bye":
 				mu.Lock()
-				byeWhy = m.Reason
+				byeWhy = clip(m.Reason, 200)
 				mu.Unlock()
 				return
 			}
