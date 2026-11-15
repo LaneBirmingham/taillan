@@ -5,8 +5,11 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
+
+	"golang.org/x/term"
 )
 
 // envPrefix starts the environment variables that set a command's
@@ -49,6 +52,11 @@ func parseArgs(fs *flag.FlagSet, args []string, env bool) ([]string, error) {
 	}
 }
 
+// serviceLink matches the variables Kubernetes (and Docker's legacy
+// links) set for a service named "taillan": TAILLAN_PORT=tcp://10.0.0.5:80.
+// They aren't settings, so they're ignored.
+var serviceLink = regexp.MustCompile(`^(tcp|udp|sctp)://`)
+
 // flagsFromEnv sets each flag from its TAILLAN_* variable, if set.
 // Explicit flags parsed afterwards still win.
 func flagsFromEnv(fs *flag.FlagSet) error {
@@ -56,6 +64,10 @@ func flagsFromEnv(fs *flag.FlagSet) error {
 	fs.VisitAll(func(f *flag.Flag) {
 		v, ok := os.LookupEnv(envName(f.Name))
 		if !ok || v == "" {
+			return
+		}
+		if serviceLink.MatchString(v) {
+			fmt.Fprintf(os.Stderr, "Note: ignoring %s=%s; it looks like a Kubernetes service address, not a setting.\n", envName(f.Name), v)
 			return
 		}
 		if bf, ok := f.Value.(interface{ IsBoolFlag() bool }); ok && bf.IsBoolFlag() {
@@ -134,8 +146,8 @@ func parseTargets(s string, groups int) (map[int]uint16, error) {
 }
 
 // interactive reports whether stdin is a terminal someone can type in,
-// rather than a pipe, a file or nothing (a service or container).
+// rather than a pipe, a file or nothing (a service or container; their
+// /dev/null is a character device, but not a terminal).
 func interactive() bool {
-	fi, err := os.Stdin.Stat()
-	return err == nil && fi.Mode()&os.ModeCharDevice != 0
+	return term.IsTerminal(int(os.Stdin.Fd()))
 }

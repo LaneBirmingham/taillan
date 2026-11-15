@@ -244,7 +244,7 @@ kubectl exec deploy/minecraft -c taillan -- taillan invite
 kubectl exec deploy/minecraft -c taillan -- taillan status
 ```
 
-Run one replica with the `Recreate` strategy: two pods with the same kept invite would fight over one identity. Keep `/data` on a persistent volume, or the code changes with every new pod.
+Run one replica with the `Recreate` strategy: two pods with the same kept invite would fight over one identity. Keep `/data` on a persistent volume, or the code changes with every new pod. The example sets `enableServiceLinks: false`: if a Service is named `taillan`, Kubernetes otherwise adds variables like `TAILLAN_PORT=tcp://...` to the pod (TailLAN ignores those, but it's tidier without them).
 
 ## systemd
 
@@ -276,7 +276,7 @@ TailLAN waits for the network by itself (it retries until the relays answer), so
 
 ## Several games on one server
 
-Run one `taillan host` per game, each its own process, service or container. They can share one config folder: each game keeps its own invite key, and the commands above ask which game you mean when there's more than one:
+Run one `taillan host` per game, each its own process or service. On one machine they share one config folder: each game keeps its own invite key, and the commands above ask which game you mean when there's more than one:
 
 ```sh
 systemctl --user enable --now taillan@valheim taillan@minecraft-java
@@ -284,6 +284,8 @@ taillan status
 taillan invite --game minecraft-java
 taillan stop --all
 ```
+
+In containers, give each TailLAN container its own `/data` volume, and manage each one with `docker exec` into that container: commands only see sessions in their own container.
 
 Two servers of the same game work too (`taillan host valheim` and `taillan host valheim --port 2466`); pick one by its process ID (`--game <PID>`). Only one of them can use the game's kept invite (`--keep`), since a kept invite is one identity. For two kept codes, share the second by its ports with its own `--name` (`taillan host 2466-2467/udp --name "Valheim 2" --keep`), or give it its own `TAILLAN_HOME`.
 
@@ -302,7 +304,7 @@ The app only ever listens on `127.0.0.1` and needs the secret in that link, so a
 
 ## Scripts and automation
 
-- **Invite in a file:** `--invite-file /run/taillan/invite.txt` writes the code once it's ready and deletes it when sharing stops. Wait for the file to appear to know sharing has started.
+- **Invite in a file:** `--invite-file "$XDG_RUNTIME_DIR/taillan/invite.txt"` writes the code once it's ready and deletes it when sharing stops. Wait for the file to appear to know sharing has started.
 - **Status as JSON:** `taillan status --json` lists every running session: game, invite, room lock, port groups and friends with their connection.
 
   ```sh

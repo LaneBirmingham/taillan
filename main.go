@@ -94,8 +94,11 @@ func main() {
 	session.Version = version
 	args := os.Args[1:]
 	cmd := "ui"
-	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
-		cmd, args = args[0], args[1:]
+	if len(args) > 0 {
+		switch a := args[0]; {
+		case !strings.HasPrefix(a, "-"), a == "--version", a == "-v", a == "-h", a == "-help", a == "--help":
+			cmd, args = a, args[1:]
+		}
 	}
 	// Pasting an invite as the only argument means "join".
 	if strings.HasPrefix(cmd, invite.Prefix) {
@@ -141,7 +144,7 @@ func main() {
 		fmt.Println("taillan", version)
 	case "licenses", "license":
 		fmt.Print(licenseText, "\n", thirdPartyNotices)
-	case "help", "-h", "--help":
+	case "help", "-h", "-help", "--help":
 		fmt.Print(usage)
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command %q\n\n%s", cmd, usage)
@@ -176,23 +179,25 @@ func interrupt() (context.Context, context.CancelFunc) {
 
 // serveControl serves app's API on a random local port and registers
 // it, so other taillan commands (status, kick, stop...) can drive this
-// session. The returned function unregisters it and stops the server,
-// letting a request in flight (such as the "stop" that ended the
-// session) finish first.
-func serveControl(app *ui.App, kind string) func() {
+// session. rec says what it is (Kind, and for hosts Game and Keep). It
+// returns the record, and a function that unregisters it and stops the
+// server, letting a request in flight (such as the "stop" that ended
+// the session) finish first.
+func serveControl(app *ui.App, rec control.Instance) (control.Instance, func()) {
 	ln, err := app.ListenAddr("127.0.0.1:0")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Note: other taillan commands won't see this session (%v)\n", err)
-		return func() {}
+		return control.Instance{}, func() {}
 	}
 	srv := &http.Server{Handler: app.Handler(), ReadHeaderTimeout: 10 * time.Second}
 	go srv.Serve(ln)
-	unregister, err := control.Register(control.Instance{URL: app.URL, Token: app.Token, PID: os.Getpid(), Kind: kind, Started: time.Now()})
+	rec.URL, rec.Token, rec.PID, rec.Started = app.URL, app.Token, os.Getpid(), time.Now()
+	rec, unregister, err := control.Register(rec)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Note: other taillan commands won't see this session (%v)\n", err)
 		unregister = func() {}
 	}
-	return func() {
+	return rec, func() {
 		unregister()
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
@@ -251,7 +256,7 @@ func runUI(args []string) error {
 	app.Quit = stop
 
 	go app.Serve(ctx, ln)
-	if unregister, err := control.Register(control.Instance{URL: app.URL, Token: app.Token, PID: os.Getpid(), Kind: "app", Started: time.Now()}); err == nil {
+	if _, unregister, err := control.Register(control.Instance{URL: app.URL, Token: app.Token, PID: os.Getpid(), Kind: "app", Started: time.Now()}); err == nil {
 		defer unregister()
 	}
 	fmt.Printf("TailLAN %s is running.\n", version)
@@ -327,19 +332,25 @@ func runHost(args []string) error {
 	if _, err := session.NormalizeTarget(*target); err != nil {
 		return err
 	}
+	// Find out now, not after friends could be joining.
+	if *inviteFile != "" {
+		if err := writeInviteFile(*inviteFile, ""); err != nil {
+			return fmt.Errorf("can't write the invite file there: %v", err)
+		}
+		os.Remove(*inviteFile)
+	}
 	ctx, stop := interrupt()
 	defer stop()
 	app.Quit = stop
+	self, cleanup := serveControl(app, control.Instance{Kind: "host", Game: p.ID, Keep: *keep})
+	defer cleanup()
 	// Two sessions with one kept invite would be one identity in two
 	// places, and fight over it.
 	if *keep {
-		for _, r := range listRunning(ctx) {
-			if h := r.State.Host; h != nil && h.KeepCode && r.State.GameID() == p.ID {
-				return fmt.Errorf("%s is already being shared with its kept invite (PID %d). Stop that first (taillan stop %d), or share this copy without --keep", p.Name, r.PID, r.PID)
-			}
+		if r := keptElsewhere(ctx, self, p.ID); r != nil {
+			return fmt.Errorf("%s is already being shared with its kept invite (PID %d). Stop that first (taillan stop %d), or share this copy without --keep", p.Name, r.PID, r.PID)
 		}
 	}
-	defer serveControl(app, "host")()
 
 	if steps := terminalSteps(p.Host.Steps); len(steps) > 0 {
 		fmt.Printf("\nHosting %s:\n", p.Name)
@@ -406,6 +417,32 @@ func runHost(args []string) error {
 			}
 		}
 	}
+}
+
+// keptElsewhere returns another TailLAN sharing game with its kept
+// invite, or about to. Each "taillan host --keep" registers before it
+// checks, so of two started together the later one gives way.
+func keptElsewhere(ctx context.Context, self control.Instance, game string) *running {
+	for _, r := range listRunning(ctx) {
+		if r.Is(self) {
+			continue
+		}
+		if h := r.State.Host; h != nil && h.KeepCode && h.Game.ID == game {
+			return &r
+		}
+		if r.Kind == "host" && r.Keep && r.Game == game && r.State.Host == nil && earlier(r.Instance, self) {
+			return &r
+		}
+	}
+	return nil
+}
+
+// earlier orders instances by start time, then PID.
+func earlier(a, b control.Instance) bool {
+	if !a.Started.Equal(b.Started) {
+		return a.Started.Before(b.Started)
+	}
+	return a.PID < b.PID
 }
 
 // hostProfile finds the game to share: a game id, a search that finds
@@ -535,7 +572,8 @@ func runJoin(args []string) error {
 	ctx, stop := interrupt()
 	defer stop()
 	app.Quit = stop
-	defer serveControl(app, "join")()
+	_, cleanup := serveControl(app, control.Instance{Kind: "join"})
+	defer cleanup()
 	j, err := app.StartJoining(session.JoinConfig{
 		Invite: inv, Profile: p, Name: settings.Name, Key: settings.ClientPrivateKey(),
 		AllowLAN: *allowLAN, Verbose: settings.Verbose,

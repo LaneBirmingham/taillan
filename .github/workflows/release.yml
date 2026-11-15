@@ -47,6 +47,7 @@ jobs:
 
   # The container image (docs/server.md), for linux/amd64 and arm64.
   image:
+    needs: release  # only publish an image for a tag that released
     runs-on: ubuntu-latest
     permissions:
       contents: read

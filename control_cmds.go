@@ -34,8 +34,24 @@ type running struct {
 	State *control.State
 }
 
+// starting reports whether a "taillan host" or "taillan join" hasn't
+// begun its session yet: it may be waiting for the network.
+func (r running) starting() bool {
+	return r.Kind != "app" && r.State.Host == nil && r.State.Join == nil
+}
+
+// gameID is the game a session shares or joins, or is about to.
+func (r running) gameID() string {
+	if id := r.State.GameID(); id != "" {
+		return id
+	}
+	return r.Game
+}
+
 func (r running) label() string {
 	switch {
+	case r.starting():
+		return fmt.Sprintf("starting %s (PID %d)", labelOr(r.Game, "a game"), r.PID)
 	case r.State.Host != nil:
 		return fmt.Sprintf("sharing %s (PID %d)", r.State.Host.Game.ID, r.PID)
 	case r.State.Join != nil:
@@ -67,20 +83,32 @@ func (r running) matches(sel string) bool {
 	if strconv.Itoa(r.PID) == sel {
 		return true
 	}
-	id := r.State.GameID()
+	id := r.gameID()
 	return id != "" && (id == sel || id == profile.Slug(sel))
 }
 
 // pickSession finds the one active session a command acts on. want
-// narrows it to hosting ("host") or any session ("").
-func pickSession(ctx context.Context, sel, want string) (running, error) {
+// narrows it to hosting ("host") or any session (""). Sessions still
+// starting are included only if starting is true (for "stop").
+func pickSession(ctx context.Context, sel, want string, starting bool) (running, error) {
 	all := listRunning(ctx)
 	if len(all) == 0 {
 		return running{}, errors.New(`TailLAN isn't running. Start sharing with "taillan host <game>"`)
 	}
-	var found []running
+	var found, waiting []running
 	for _, r := range all {
-		if !r.State.Active() || !r.matches(sel) {
+		if !r.matches(sel) {
+			continue
+		}
+		if r.starting() {
+			if starting {
+				found = append(found, r)
+			} else if want == "" || r.Kind == "host" {
+				waiting = append(waiting, r)
+			}
+			continue
+		}
+		if !r.State.Active() {
 			continue
 		}
 		if want == "host" && r.State.Host == nil {
@@ -97,6 +125,8 @@ func pickSession(ctx context.Context, sel, want string) (running, error) {
 			names = append(names, r.label())
 		}
 		return running{}, fmt.Errorf("several games are running: %s. Say which with --game <id>", strings.Join(names, "; "))
+	case len(waiting) > 0:
+		return running{}, fmt.Errorf(`%s is still starting (it may be waiting for the network). Try again once "taillan status" shows it sharing`, labelOr(waiting[0].Game, "TailLAN"))
 	}
 	what := "shared or joined"
 	if want == "host" {
@@ -154,16 +184,18 @@ func runStatus(args []string) error {
 	case *quiet:
 	case *asJSON:
 		type entry struct {
-			PID     int             `json:"pid"`
-			Kind    string          `json:"kind"`
-			Started time.Time       `json:"started"`
-			Version string          `json:"version"`
-			Name    string          `json:"name"`
-			Session json.RawMessage `json:"session"`
+			PID      int             `json:"pid"`
+			Kind     string          `json:"kind"`
+			Started  time.Time       `json:"started"`
+			Version  string          `json:"version"`
+			Name     string          `json:"name"`
+			Starting bool            `json:"starting,omitempty"`
+			Game     string          `json:"game,omitempty"`
+			Session  json.RawMessage `json:"session"`
 		}
 		out := []entry{}
 		for _, r := range list {
-			out = append(out, entry{r.PID, r.Kind, r.Started, r.State.Version, r.State.Name, r.State.Session})
+			out = append(out, entry{r.PID, r.Kind, r.Started, r.State.Version, r.State.Name, r.starting(), r.gameID(), r.State.Session})
 		}
 		b, _ := json.MarshalIndent(out, "", "  ")
 		fmt.Println(string(b))
@@ -202,6 +234,8 @@ func printStatus(r running) {
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 	defer w.Flush()
 	switch st := r.State; {
+	case r.starting():
+		fmt.Printf("Starting %s (%s, PID %d, for %s): not sharing yet. If this lasts, check its output; it may be waiting for the network.\n", labelOr(r.Game, "a game"), kindLabel(r.Kind), r.PID, since)
 	case st.Host != nil:
 		h := st.Host
 		fmt.Printf("Sharing %s (%s, PID %d, running %s)\n", h.Game.Name, kindLabel(r.Kind), r.PID, since)
@@ -314,7 +348,7 @@ func runInvite(args []string) error {
 	fs, sel := sessionFlags("invite", "invite [game]", "Prints the invite code of the game you're sharing. Send it privately: it's the key.")
 	message := fs.Bool("message", false, "print a ready-to-send message for friends, not just the code")
 	pos, _ := parseArgs(fs, args, false)
-	r, err := pickSession(context.Background(), selector(*sel, pos), "host")
+	r, err := pickSession(context.Background(), selector(*sel, pos), "host", false)
 	if err != nil {
 		return err
 	}
@@ -355,7 +389,7 @@ func runLock(args []string, locked bool) error {
 	fs, sel := sessionFlags(name, name+" [game]", "Locking stops new friends joining with the invite; friends already here can\nreconnect. Unlocking lets anyone with the invite in again.")
 	pos, _ := parseArgs(fs, args, false)
 	ctx := context.Background()
-	r, err := pickSession(ctx, selector(*sel, pos), "host")
+	r, err := pickSession(ctx, selector(*sel, pos), "host", false)
 	if err != nil {
 		return err
 	}
@@ -379,7 +413,7 @@ func runKick(args []string) error {
 		return errors.New(`who? Give a friend's name, as "taillan status" lists them`)
 	}
 	ctx := context.Background()
-	r, err := pickSession(ctx, *sel, "host")
+	r, err := pickSession(ctx, *sel, "host", false)
 	if err != nil {
 		return err
 	}
@@ -447,7 +481,7 @@ func runStop(args []string) error {
 	var targets []running
 	if *all {
 		for _, r := range listRunning(ctx) {
-			if r.State.Active() {
+			if r.State.Active() || r.starting() {
 				targets = append(targets, r)
 			}
 		}
@@ -456,7 +490,7 @@ func runStop(args []string) error {
 			return nil
 		}
 	} else {
-		r, err := pickSession(ctx, selector(*sel, pos), "")
+		r, err := pickSession(ctx, selector(*sel, pos), "", true)
 		if err != nil {
 			return err
 		}
@@ -464,7 +498,14 @@ func runStop(args []string) error {
 	}
 	var errs []error
 	for _, r := range targets {
-		if h := r.State.Host; h != nil {
+		if r.starting() {
+			// Not sharing yet: quit it, so it stops trying.
+			if err := r.Post(ctx, "/api/quit", nil); err != nil {
+				errs = append(errs, err)
+				continue
+			}
+			fmt.Printf("Stopped %s before it started sharing.\n", labelOr(r.Game, "TailLAN"))
+		} else if h := r.State.Host; h != nil {
 			if err := r.Post(ctx, "/api/host/stop", nil); err != nil {
 				errs = append(errs, err)
 				continue
@@ -518,15 +559,25 @@ func runRetire(args []string) error {
 	if err != nil {
 		return err
 	}
+	// The key is named after the game id, which for games shared by
+	// port numbers is a slug of their name: try that exactly first, so
+	// a search can't pick a different game.
 	id, name := profile.Slug(args[0]), args[0]
-	if p := store.Get(args[0]); p != nil {
-		id, name = p.ID, p.Name
-	} else if m := store.Find(args[0]); len(m) == 1 {
-		id, name = m[0].ID, m[0].Name
-	}
 	hk, err := config.LoadHostKey("game-" + id)
 	if err != nil {
 		return err
+	}
+	if hk == nil {
+		if p := store.Get(args[0]); p != nil {
+			id, name = p.ID, p.Name
+		} else if m := store.Find(args[0]); len(m) == 1 {
+			id, name = m[0].ID, m[0].Name
+		}
+		if hk, err = config.LoadHostKey("game-" + id); err != nil {
+			return err
+		}
+	} else if p := store.Get(id); p != nil {
+		name = p.Name
 	}
 	if hk == nil {
 		return fmt.Errorf("there's no kept invite for %s", name)

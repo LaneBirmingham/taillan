@@ -494,7 +494,9 @@ func (a *App) StartHosting(ctx context.Context, cfg session.HostConfig) (*sessio
 	h, err := session.StartHost(ctx, cfg)
 	if err != nil {
 		a.finishStart(nil)
-		a.Log.Logf("Couldn't start sharing: %v", err)
+		if ctx.Err() == nil {
+			a.Log.Logf("Couldn't start sharing: %v", err)
+		}
 		return nil, err
 	}
 	if !a.finishStart(func() { a.host, a.hostCfg = h, &cfg }) {

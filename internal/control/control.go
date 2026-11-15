@@ -11,6 +11,7 @@ package control
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,10 +20,12 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
+
+	"github.com/shirou/gopsutil/v4/process"
 
 	"github.com/LaneBirmingham/taillan/internal/config"
 	"github.com/LaneBirmingham/taillan/internal/session"
@@ -35,43 +38,68 @@ type Instance struct {
 	PID     int       `json:"pid"`
 	Kind    string    `json:"kind"` // "app", "host" or "join"
 	Started time.Time `json:"started"`
+	// Game and Keep are what a "taillan host" was asked to share, known
+	// before it's sharing (it may be waiting for the network).
+	Game string `json:"game,omitempty"`
+	Keep bool   `json:"keep,omitempty"`
+	// NetNS names the network namespace (Linux) the instance runs in.
+	// Its 127.0.0.1 is only reachable from the same one, so records
+	// from other containers sharing this folder are left alone.
+	NetNS string `json:"netns,omitempty"`
+
+	file string
 }
 
 // Dir is where running instances are recorded.
 func Dir() string { return filepath.Join(config.Dir(), "run") }
 
-func (in Instance) path() string {
-	return filepath.Join(Dir(), strconv.Itoa(in.PID)+".json")
+// Is reports whether two Instances are the same record.
+func (in Instance) Is(other Instance) bool {
+	return in.file != "" && in.file == other.file
+}
+
+// netNS identifies this process's network namespace, or "" where
+// there are none (outside Linux).
+func netNS() string {
+	ns, _ := os.Readlink("/proc/self/ns/net")
+	return ns
 }
 
 // Register records a running instance so other taillan commands can
-// find it. The returned function removes the record; call it on exit.
-func Register(in Instance) (func(), error) {
+// find it. It returns the record and a function that removes it; call
+// that on exit.
+func Register(in Instance) (Instance, func(), error) {
+	in.NetNS = netNS()
 	if err := os.MkdirAll(Dir(), 0o700); err != nil {
-		return func() {}, err
+		return in, func() {}, err
 	}
 	data, err := json.Marshal(in)
 	if err != nil {
-		return func() {}, err
+		return in, func() {}, err
 	}
-	p := in.path()
-	tmp := p + ".tmp"
+	// The PID alone isn't unique: in containers, it's 1 every time.
+	b := make([]byte, 4)
+	rand.Read(b)
+	in.file = filepath.Join(Dir(), fmt.Sprintf("%d-%x.json", in.PID, b))
+	tmp := in.file + ".tmp"
 	if err := os.WriteFile(tmp, data, 0o600); err != nil {
-		return func() {}, err
+		return in, func() {}, err
 	}
-	if err := os.Rename(tmp, p); err != nil {
+	if err := os.Rename(tmp, in.file); err != nil {
 		os.Remove(tmp)
-		return func() {}, err
+		return in, func() {}, err
 	}
-	return func() { os.Remove(p) }, nil
+	return in, func() { os.Remove(in.file) }, nil
 }
 
 // Running returns the instances that answer, oldest first. Records of
 // instances that are gone (crashed, or killed) are removed.
 func Running(ctx context.Context) []Instance {
 	files, _ := filepath.Glob(filepath.Join(Dir(), "*.json"))
-	var out []Instance
-	for _, f := range files {
+	here := netNS()
+	found := make([]*Instance, len(files))
+	var wg sync.WaitGroup
+	for i, f := range files {
 		data, err := os.ReadFile(f)
 		if err != nil {
 			continue
@@ -81,11 +109,26 @@ func Running(ctx context.Context) []Instance {
 			os.Remove(f)
 			continue
 		}
-		switch in.ping(ctx) {
-		case alive:
-			out = append(out, in)
-		case gone:
-			os.Remove(f)
+		if in.NetNS != here {
+			continue // another container's: unreachable from here
+		}
+		in.file = f
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			switch in.check(ctx) {
+			case alive:
+				found[i] = &in
+			case gone:
+				os.Remove(f)
+			}
+		}()
+	}
+	wg.Wait()
+	var out []Instance
+	for _, in := range found {
+		if in != nil {
+			out = append(out, *in)
 		}
 	}
 	slices.SortFunc(out, func(a, b Instance) int { return a.Started.Compare(b.Started) })
@@ -100,25 +143,38 @@ const (
 	unsure          // slow to answer; leave its record alone
 )
 
-func (in Instance) ping(ctx context.Context) liveness {
-	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+// wsaeConnRefused is Windows' "connection refused", which isn't
+// syscall.ECONNREFUSED there.
+const wsaeConnRefused = 10061
+
+func (in Instance) check(ctx context.Context) liveness {
+	pctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, "GET", in.URL+"/api/ping?t="+in.Token, nil)
+	req, err := http.NewRequestWithContext(pctx, "GET", in.URL+"/api/ping?t="+in.Token, nil)
 	if err != nil {
 		return gone
 	}
 	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		if errors.Is(err, syscall.ECONNREFUSED) || strings.Contains(err.Error(), "refused") {
+	if err == nil {
+		resp.Body.Close()
+		if resp.StatusCode == http.StatusOK {
+			return alive
+		}
+		return gone // something else took the port, or a different secret
+	}
+	var errno syscall.Errno
+	if errors.As(err, &errno) && (errno == syscall.ECONNREFUSED || errno == wsaeConnRefused) {
+		return gone
+	}
+	// No clear answer (a timeout, a firewall): only a process that's
+	// gone settles it. PIDs are only checked here, after the ping,
+	// because a record can come from another PID namespace.
+	if in.PID > 0 {
+		if ok, err := process.PidExistsWithContext(ctx, int32(in.PID)); err == nil && !ok {
 			return gone
 		}
-		return unsure
 	}
-	resp.Body.Close()
-	if resp.StatusCode == http.StatusOK {
-		return alive
-	}
-	return gone // something else took the port, or a different secret
+	return unsure
 }
 
 // State is what a running instance reports. Exactly one of Host and

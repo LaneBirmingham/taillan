@@ -2,6 +2,7 @@ package control
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -38,13 +39,12 @@ func TestRegisterAndRunning(t *testing.T) {
 	t.Setenv("TAILLAN_HOME", t.TempDir())
 	ctx := context.Background()
 	a, _ := newApp(t)
-	live := Instance{URL: a.URL, Token: a.Token, PID: 1001, Kind: "host", Started: time.Now()}
-	unregister, err := Register(live)
+	live, unregister, err := Register(Instance{URL: a.URL, Token: a.Token, PID: 1001, Kind: "host", Game: "valheim", Keep: true, Started: time.Now()})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if runtime.GOOS != "windows" {
-		fi, err := os.Stat(live.path())
+		fi, err := os.Stat(live.file)
 		if err != nil || fi.Mode().Perm() != 0o600 {
 			t.Errorf("record readable by others: %v, %v", fi.Mode(), err)
 		}
@@ -62,14 +62,21 @@ func TestRegisterAndRunning(t *testing.T) {
 	// The port now belongs to an instance with a different secret.
 	Register(Instance{URL: a.URL, Token: "stale", PID: 1003, Kind: "app"})
 	os.WriteFile(filepath.Join(Dir(), "1004.json"), []byte("not json"), 0o600)
+	// Another container sharing this folder, in its own network
+	// namespace: its 127.0.0.1 isn't ours, so its record stays.
+	other, _ := json.Marshal(Instance{URL: deadURL, Token: "y", PID: 1, Kind: "host", NetNS: "net:[1]"})
+	os.WriteFile(filepath.Join(Dir(), "1-other.json"), other, 0o600)
 
 	got := Running(ctx)
 	if len(got) != 1 || got[0].PID != 1001 {
 		t.Fatalf("Running = %+v, want only PID 1001", got)
 	}
+	if !got[0].Is(live) || got[0].Game != "valheim" || !got[0].Keep {
+		t.Errorf("record = %+v, want %+v", got[0], live)
+	}
 	left, _ := filepath.Glob(filepath.Join(Dir(), "*.json"))
-	if len(left) != 1 {
-		t.Errorf("stale records not cleaned up: %v", left)
+	if len(left) != 2 {
+		t.Errorf("stale records not cleaned up, or another namespace's removed: %v", left)
 	}
 
 	st, err := got[0].State(ctx)
@@ -90,6 +97,35 @@ func TestRegisterAndRunning(t *testing.T) {
 	unregister()
 	if len(Running(ctx)) != 0 {
 		t.Error("unregistered instance still listed")
+	}
+}
+
+// TestRegisterSamePID checks two records with one PID (each container's
+// TailLAN is PID 1) don't overwrite each other, and each removes only
+// its own.
+func TestRegisterSamePID(t *testing.T) {
+	t.Setenv("TAILLAN_HOME", t.TempDir())
+	a, _ := newApp(t)
+	b, _ := newApp(t)
+	ra, unregA, err := Register(Instance{URL: a.URL, Token: a.Token, PID: 1, Kind: "host"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rb, unregB, err := Register(Instance{URL: b.URL, Token: b.Token, PID: 1, Kind: "join"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unregB()
+	if ra.Is(rb) {
+		t.Fatal("same record file for both")
+	}
+	if n := len(Running(context.Background())); n != 2 {
+		t.Fatalf("Running = %d instances, want 2", n)
+	}
+	unregA()
+	got := Running(context.Background())
+	if len(got) != 1 || !got[0].Is(rb) {
+		t.Errorf("after one unregistered: %+v", got)
 	}
 }
 

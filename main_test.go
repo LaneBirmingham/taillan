@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/LaneBirmingham/taillan/internal/control"
 	"github.com/LaneBirmingham/taillan/internal/session"
 )
 
@@ -78,6 +79,25 @@ func TestFlagsFromEnv(t *testing.T) {
 	fs, _, _, _ = newTestFlags()
 	if _, err := parseArgs(fs, nil, true); err == nil || !strings.Contains(err.Error(), "TAILLAN_KEEP") {
 		t.Errorf("bad env value: err = %v", err)
+	}
+
+	// Kubernetes sets TAILLAN_PORT=tcp://... for a service named
+	// taillan; that isn't a setting.
+	t.Setenv("TAILLAN_KEEP", "")
+	t.Setenv("TAILLAN_TARGET", "tcp://10.96.0.12:47800")
+	fs, target, _, _ = newTestFlags()
+	if _, err := parseArgs(fs, nil, true); err != nil || *target != "127.0.0.1" {
+		t.Errorf("service link not ignored: target %q, err %v", *target, err)
+	}
+}
+
+func TestEarlier(t *testing.T) {
+	now := time.Now()
+	a := control.Instance{PID: 9, Started: now}
+	b := control.Instance{PID: 3, Started: now.Add(time.Second)}
+	c := control.Instance{PID: 4, Started: now.Add(time.Second)}
+	if !earlier(a, b) || earlier(b, a) || !earlier(b, c) || earlier(c, b) {
+		t.Error("earlier orders by start time, then PID")
 	}
 }
 

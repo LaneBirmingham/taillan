@@ -63,4 +63,5 @@ jobs:
           docker exec tl taillan status --json | grep -q '"locked": true'
           docker exec tl taillan stop
           [ "$(docker wait tl)" = 0 ]
-          if docker logs tl 2>&1 | grep -q 'TL1-'; then echo "invite code printed despite --print-invite=false"; exit 1; fi
+          logs=$(docker logs tl 2>&1)
+          if grep -q 'TL1-' <<<"$logs"; then echo "invite code printed despite --print-invite=false"; exit 1; fi

@@ -24,6 +24,9 @@ spec:
     metadata:
       labels: { app: minecraft }
     spec:
+      # Kubernetes otherwise sets variables like TAILLAN_PORT=tcp://...
+      # for any Service named "taillan", which look like settings.
+      enableServiceLinks: false
       securityContext:
         fsGroup: 65532
       containers:
