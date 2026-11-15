@@ -120,6 +120,7 @@ taillan licenses             licenses of TailLAN and its components
 - On joiners' machines, forwarded ports listen on `127.0.0.1` only. Ports a game marks `lan` (for LAN discovery) listen on all interfaces but accept connections only from the same computer, unless the joiner explicitly allows their LAN.
 - The UI is served on `127.0.0.1` and protected by a per-run secret, Host/Origin checks (against DNS rebinding and cross-site requests) and a strict Content Security Policy.
 - **Keep the same invite code** saves the host key in your config folder (`keys/`). Anyone you've ever sent that code to can rejoin future sessions until you click *Retire invite* in the Games tab.
+- Release binaries are built by GitHub Actions from the tagged source, with signed build provenance you can check: `gh attestation verify <file> --repo LaneBirmingham/taillan`.
 
 Found a vulnerability? See the [security policy](../SECURITY.md).
 
