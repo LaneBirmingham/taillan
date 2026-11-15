@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -32,7 +33,9 @@ type HostConfig struct {
 	// the host added.
 	Profile *profile.Profile
 	// TargetIP is where the game server runs, as seen from the host:
-	// 127.0.0.1 (the default) or another device on the host's LAN.
+	// 127.0.0.1 (the default), another device on the host's LAN, or a
+	// host name such as a container's, looked up each time a friend
+	// connects (so a restarted container with a new IP still works).
 	TargetIP string
 	// Targets overrides, per port group, the host-side port the game
 	// actually listens on (for profiles with "ask" ports).
@@ -93,12 +96,11 @@ func StartHost(ctx context.Context, cfg HostConfig) (*Host, error) {
 	if err := p.Validate(); err != nil {
 		return nil, err
 	}
-	if cfg.TargetIP == "" {
-		cfg.TargetIP = "127.0.0.1"
+	target, err := NormalizeTarget(cfg.TargetIP)
+	if err != nil {
+		return nil, err
 	}
-	if _, err := netip.ParseAddr(cfg.TargetIP); err != nil {
-		return nil, fmt.Errorf("game server address %q must be an IP address like 127.0.0.1 or 192.168.1.20", cfg.TargetIP)
-	}
+	cfg.TargetIP = target
 	h := &Host{
 		cfg:       cfg,
 		tcpByPort: map[uint16]profile.Mapping{},
@@ -148,7 +150,6 @@ func StartHost(ctx context.Context, cfg HostConfig) (*Host, error) {
 	var saved *config.HostKey
 	if cfg.KeepCode {
 		h.keepName = "game-" + p.ID
-		var err error
 		saved, err = config.LoadHostKey(h.keepName)
 		if err != nil {
 			logf("saved invite for %s is unreadable, making a new one: %v", p.Name, err)
@@ -236,15 +237,56 @@ func StartHost(ctx context.Context, cfg HostConfig) (*Host, error) {
 	return h, nil
 }
 
+// friendlyStartErr explains a failure to reach the relays. These are
+// network trouble, so they're marked as worth retrying.
 func friendlyStartErr(err error) error {
 	s := err.Error()
 	switch {
+	case errors.Is(err, context.Canceled):
+		return err
 	case errors.Is(err, context.DeadlineExceeded):
-		return fmt.Errorf("couldn't reach a relay server in time; check your internet connection (%v)", err)
+		err = fmt.Errorf("couldn't reach a relay server in time; check your internet connection (%v)", err)
 	case strings.Contains(s, "no such host"), strings.Contains(s, "dial tcp"):
-		return fmt.Errorf("couldn't reach the internet relay servers; check your internet connection or firewall (%v)", err)
+		err = fmt.Errorf("couldn't reach the internet relay servers; check your internet connection or firewall (%v)", err)
 	}
-	return err
+	return retryable{err}
+}
+
+// retryable marks an error that may go away by itself, such as no
+// internet yet right after a server boots.
+type retryable struct{ error }
+
+func (r retryable) Unwrap() error { return r.error }
+
+// Retryable reports whether StartHost failed for a reason that may go
+// away by itself (the network), so trying again later makes sense.
+func Retryable(err error) bool {
+	var r retryable
+	return errors.As(err, &r)
+}
+
+// hostnameRE matches a DNS name: dot-separated labels of letters,
+// digits, dashes and (as Docker allows in service names) underscores.
+var hostnameRE = regexp.MustCompile(`^[A-Za-z0-9_]([A-Za-z0-9_-]{0,62})(\.[A-Za-z0-9_]([A-Za-z0-9_-]{0,62}))*\.?$`)
+
+// NormalizeTarget checks the game server address a host gave: an IP
+// address, or a host name (a LAN device, or a container's service
+// name). Empty and "localhost" mean this machine, 127.0.0.1.
+func NormalizeTarget(t string) (string, error) {
+	t = strings.TrimSpace(t)
+	if t == "" || strings.EqualFold(t, "localhost") {
+		return "127.0.0.1", nil
+	}
+	if a, err := netip.ParseAddr(strings.Trim(t, "[]")); err == nil {
+		return a.Unmap().String(), nil
+	}
+	if len(t) <= 253 && hostnameRE.MatchString(t) {
+		return t, nil
+	}
+	if h, _, err := net.SplitHostPort(t); err == nil && h != "" {
+		return "", fmt.Errorf("game server address %q has a port in it; give just the address (%s) and set the port separately", t, h)
+	}
+	return "", fmt.Errorf("game server address %q must be an IP address like 192.168.1.20 or a name like my-server", t)
 }
 
 func portRanges(ports []uint16) []filter.PortRange {
@@ -329,6 +371,9 @@ func (h *Host) Stop() {
 	h.srv.Close()
 	h.cfg.Log.Logf("Stopped sharing %s", h.cfg.Profile.Name)
 }
+
+// Done is closed once the session has stopped.
+func (h *Host) Done() <-chan struct{} { return h.ctx.Done() }
 
 // SetLocked locks the room: only friends who have already connected
 // (in this session) can reconnect; new invite holders are ignored.
@@ -454,7 +499,11 @@ func (h *Host) onTCP(port uint16) func(net.Conn) {
 			}
 		}
 		if err != nil {
-			h.cfg.Log.Logf("A friend tried to connect on TCP %d, but nothing answered on port %d. Is the game server running?", port, tp)
+			where := ""
+			if h.cfg.TargetIP != "127.0.0.1" {
+				where = fmt.Sprintf(" of %s (%v)", h.cfg.TargetIP, err)
+			}
+			h.cfg.Log.Logf("A friend tried to connect on TCP %d, but nothing answered on port %d%s. Is the game server running?", port, tp, where)
 			c.Close()
 			return
 		}
@@ -479,7 +528,7 @@ func (h *Host) onUDP(port uint16) func(tailcat.ConnPacketConn) {
 			local, err = net.DialUDP("udp", nil, ua)
 		}
 		if err != nil {
-			h.cfg.Log.Logf("can't forward UDP %d to %s: %v", port, dst, err)
+			h.cfg.Log.Logf("A friend's game traffic on UDP %d couldn't reach the game server at %s: %v", port, dst, err)
 			c.Close()
 			return
 		}

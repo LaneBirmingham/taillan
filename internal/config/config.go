@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 
@@ -107,17 +108,34 @@ func (s *Settings) ClientPrivateKey() key.NodePrivate {
 	return k
 }
 
+// CleanName tidies a display name: single spaces, and at most 40
+// characters. An empty result means no name was given.
+func CleanName(n string) string {
+	n = strings.Join(strings.Fields(n), " ")
+	if r := []rune(n); len(r) > 40 {
+		n = strings.TrimSpace(string(r[:40]))
+	}
+	return n
+}
+
+// systemUsers are account names that say nothing about who's playing,
+// such as a container's or a server's default user.
+var systemUsers = map[string]bool{"root": true, "nonroot": true, "nobody": true}
+
+// containerID matches a Docker container's default host name.
+var containerID = regexp.MustCompile(`^[0-9a-f]{12,64}$`)
+
 func defaultName() string {
 	if u, err := user.Current(); err == nil {
 		n := u.Username
 		if i := strings.LastIndexAny(n, `\/`); i >= 0 { // Windows DOMAIN\user
 			n = n[i+1:]
 		}
-		if n != "" {
+		if n != "" && !systemUsers[strings.ToLower(n)] {
 			return strings.ToUpper(n[:1]) + n[1:]
 		}
 	}
-	if h, err := os.Hostname(); err == nil && h != "" {
+	if h, err := os.Hostname(); err == nil && h != "" && !containerID.MatchString(h) {
 		return h
 	}
 	return "Player"

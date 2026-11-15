@@ -567,6 +567,9 @@ func (j *Join) shutdown() {
 	j.cl.Close()
 }
 
+// Done is closed once the session is over and its ports are closed.
+func (j *Join) Done() <-chan struct{} { return j.ctx.Done() }
+
 // Ended reports whether the session is over.
 func (j *Join) Ended() bool {
 	j.mu.Lock()

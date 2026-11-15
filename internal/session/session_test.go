@@ -299,6 +299,48 @@ func waitFor(t *testing.T, ctx context.Context, what string, cond func() bool) {
 	}
 }
 
+func TestNormalizeTarget(t *testing.T) {
+	ok := map[string]string{
+		"":                "127.0.0.1",
+		" localhost ":     "127.0.0.1",
+		"192.168.1.20":    "192.168.1.20",
+		"::1":             "::1",
+		"[fd00::5]":       "fd00::5",
+		"::ffff:10.0.0.1": "10.0.0.1",
+		"valheim":         "valheim",
+		"mc_server":       "mc_server",
+		"nas.home.arpa":   "nas.home.arpa",
+	}
+	for in, want := range ok {
+		if got, err := NormalizeTarget(in); err != nil || got != want {
+			t.Errorf("NormalizeTarget(%q) = %q, %v; want %q", in, got, err, want)
+		}
+	}
+	for _, bad := range []string{"192.168.1.20:2456", "http://nas", "a b", "-x", "x/y", strings.Repeat("a", 64)} {
+		if got, err := NormalizeTarget(bad); err == nil {
+			t.Errorf("NormalizeTarget(%q) = %q, want an error", bad, got)
+		}
+	}
+	if _, err := NormalizeTarget("nas:2456"); err == nil || !strings.Contains(err.Error(), "port") {
+		t.Errorf("address with a port: %v", err)
+	}
+}
+
+func TestRetryable(t *testing.T) {
+	if !Retryable(friendlyStartErr(context.DeadlineExceeded)) {
+		t.Error("relay timeout not retryable")
+	}
+	if !Retryable(friendlyStartErr(errors.New("dial tcp: lookup derp1.tailscale.com: no such host"))) {
+		t.Error("no DNS not retryable")
+	}
+	if Retryable(friendlyStartErr(context.Canceled)) {
+		t.Error("cancelled start is retryable")
+	}
+	if Retryable(errors.New("ports: bad")) {
+		t.Error("plain error is retryable")
+	}
+}
+
 func TestJoinProfile(t *testing.T) {
 	local := &profile.Profile{
 		ID: "g", Name: "G", Ports: []profile.Port{{Port: 1000, Proto: "udp"}},

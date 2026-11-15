@@ -35,3 +35,32 @@ jobs:
       - name: Cross-compile
         if: runner.os == 'Linux'
         run: make release GO=go
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - name: Build image
+        run: docker build -t taillan:ci .
+      - name: Smoke test
+        # Shares a port over tailcat's public relays from inside the
+        # container, then drives it the way docs/server.md describes.
+        run: |
+          set -euo pipefail
+          trap 'docker logs tl 2>&1 | tail -n 50 || true' ERR
+          docker run --rm taillan:ci version
+          docker run --rm taillan:ci games valheim
+          if docker run --rm taillan:ci status; then echo "status should exit 1 with nothing running"; exit 1; fi
+          docker run -d --name tl -e TAILLAN_NAME="CI game" -e TAILLAN_PRINT_INVITE=false \
+            taillan:ci host 47123/tcp --invite-file /data/invite.txt
+          for _ in $(seq 60); do docker exec tl taillan status --quiet && break; sleep 2; done
+          docker exec tl taillan status
+          docker exec tl taillan invite | grep -q '^TL1-'
+          docker cp tl:/data/invite.txt invite.txt && grep -q '^TL1-' invite.txt
+          docker exec tl taillan lock
+          docker exec tl taillan status --json | grep -q '"locked": true'
+          docker exec tl taillan stop
+          [ "$(docker wait tl)" = 0 ]
+          if docker logs tl 2>&1 | grep -q 'TL1-'; then echo "invite code printed despite --print-invite=false"; exit 1; fi

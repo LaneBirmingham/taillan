@@ -321,7 +321,7 @@ function viewHostSetup() {
           h("summary", {}, "Advanced"),
           h("div", { class: "stack" },
             h("label", { class: "field" }, h("span", {}, "Extra ports to share"), extra, h("small", {}, "Shared along with the game, e.g. a voice server.")),
-            h("label", { class: "field" }, h("span", {}, "Game server address"), target, h("small", {}, "Keep 127.0.0.1 if the server runs on this computer. Use another device's LAN IP (e.g. 192.168.1.20) if it runs there.")))),
+            h("label", { class: "field" }, h("span", {}, "Game server address"), target, h("small", {}, "Keep 127.0.0.1 if the server runs on this computer. If it runs on another device, use its LAN IP (e.g. 192.168.1.20) or name.")))),
         h("div", { class: "row" }, start, saveBtn))));
 }
 

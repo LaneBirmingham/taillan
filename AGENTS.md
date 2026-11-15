@@ -1,6 +1,6 @@
 # Instructions for coding agents
 
-TailLAN shares game servers between friends over [tailcat](https://github.com/tailscale/tailcat) tunnels. Read [README.md](README.md) for what it does and [docs/README.md](docs/README.md) for features, security and the code map.
+TailLAN shares game servers between friends over [tailcat](https://github.com/tailscale/tailcat) tunnels. Read [README.md](README.md) for what it does, [docs/README.md](docs/README.md) for features, security and the code map, and [docs/server.md](docs/server.md) for headless and container use.
 
 ## Toolchain
 
@@ -8,6 +8,7 @@ TailLAN shares game servers between friends over [tailcat](https://github.com/ta
 - Build and test with the tailcat build tags: `make build`, `make test`, `make vet`. The raw form is `go test -tags "$(cat build-tags.txt)" ./...`.
 - `make test` includes a real host/join round trip over tailcat's public relays. Offline, use `TAILLAN_SKIP_NET=1 make test` (or `go test -short`).
 - Everything must cross-compile with `CGO_ENABLED=0` (`make release`). Don't add cgo dependencies.
+- The container image (`Dockerfile`) builds the same way; CI builds it and smoke-tests `host`, `status`, `invite` and `stop` inside it. Base images are pinned by digest (Dependabot bumps them).
 - After adding or updating a dependency, run `make notices` and commit `THIRD_PARTY_NOTICES.txt` (CI checks it; release binaries embed it).
 
 ## Adding or fixing a game (most common task)
@@ -30,7 +31,8 @@ Only when JSON can't express it. See [docs/helpers.md](docs/helpers.md) and `int
 
 - Player-facing text (UI, CLI output, errors, game steps) is plain and short, written for someone who has never port-forwarded. Say what to do next, not what went wrong internally.
 - The UI (`internal/ui/web`) is dependency-free HTML/CSS/JS embedded in the binary. Build DOM with the `h()` helper (it sets `textContent`); never use `innerHTML` with data. Keep it working in light and dark mode.
-- Security boundaries to preserve: forwarded ports on joiners bind `127.0.0.1` (or all interfaces with the local-only filter for `lan` ports); the host only serves the profile's declared ports plus the control port (65531); the UI requires the session cookie and checks Host and Origin. Add a test if you touch any of these.
+- Security boundaries to preserve: forwarded ports on joiners bind `127.0.0.1` (or all interfaces with the local-only filter for `lan` ports); the host only serves the profile's declared ports plus the control port (65531), and only to the chosen target; the UI and the terminal sessions' API (`internal/control`, used by `taillan status/kick/stop`) listen on `127.0.0.1` only, require the session cookie and check Host and Origin; `run/` records holding those secrets are `0600` in a `0700` folder. Add a test if you touch any of these.
+- Headless use (servers, containers, `docs/server.md`) must keep working: never prompt when stdin isn't a terminal, keep every `host`/`join` flag settable through its `TAILLAN_*` variable, and keep `taillan status` exit codes (0 sharing or connected, 1 not).
 - Invite format changes must stay backwards compatible within `TL1-` (add optional fields; never repurpose one).
 - Run `gofmt`, `make vet` and `make test` before finishing.
 

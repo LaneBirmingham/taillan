@@ -57,9 +57,12 @@ Get the file for your system from the [latest release](https://github.com/LaneBi
 
 ARM builds for Windows and Linux are there too.
 
+**Sharing a dedicated server?** TailLAN runs headless too: over SSH, as a service, in Docker (`ghcr.io/lanebirmingham/taillan`) or on Kubernetes. See [Running TailLAN on a server](docs/server.md).
+
 ## More
 
 - [More about TailLAN](docs/README.md): features, the built-in games, finding a game's ports, the command line, security, limitations and how it works.
+- [Running TailLAN on a server](docs/server.md): headless over SSH, systemd, Docker sidecars, Kubernetes.
 - [Add a game](docs/adding-a-game.md) (one JSON file, no code) or [write a game helper](docs/helpers.md).
 - [Contributing](CONTRIBUTING.md) · [Security policy](SECURITY.md)
 
