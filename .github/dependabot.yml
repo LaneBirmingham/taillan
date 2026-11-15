@@ -1,8 +1,19 @@
-# Keeps the commit-pinned GitHub Actions up to date. Go modules are
-# left out: updating them also needs `make notices`.
+# Keeps the commit-pinned GitHub Actions and the digest-pinned base
+# images in the Dockerfile up to date. Go modules are left out:
+# updating them also needs `make notices`.
 version: 2
 updates:
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: monthly
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: monthly
+    ignore:
+      # The image builds with the Go in go.mod and mise.toml (CI checks
+      # they match), so new Go versions are bumped there by hand. Digest
+      # updates of the same version still come through.
+      - dependency-name: golang
+        update-types: ["version-update:semver-major", "version-update:semver-minor", "version-update:semver-patch"]

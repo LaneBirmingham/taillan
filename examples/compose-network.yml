@@ -1,0 +1,32 @@
+# TailLAN next to a Minecraft server on the same Compose network.
+# Friends join with the invite code: no ports to open or forward.
+#
+#   docker compose -f compose-network.yml up -d
+#   docker compose -f compose-network.yml exec taillan taillan invite
+#
+# Other setups (a sidecar, host networking, Kubernetes, systemd):
+# docs/server.md.
+services:
+  minecraft:
+    image: itzg/minecraft-server
+    environment:
+      EULA: "TRUE"
+    volumes:
+      - minecraft:/data
+    restart: unless-stopped
+
+  taillan:
+    image: ghcr.io/lanebirmingham/taillan:latest
+    # Share Minecraft, sending friends to the "minecraft" service.
+    # --keep gives the same invite code after every restart (its key
+    # lives in the taillan volume).
+    command: ["host", "minecraft-java", "--target", "minecraft", "--keep"]
+    environment:
+      TAILLAN_DISPLAY_NAME: "Lane's server"
+    volumes:
+      - taillan:/data
+    restart: unless-stopped
+
+volumes:
+  minecraft:
+  taillan:

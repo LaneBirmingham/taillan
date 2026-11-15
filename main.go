@@ -10,7 +10,6 @@ import (
 	"bufio"
 	"context"
 	_ "embed"
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -24,6 +23,7 @@ import (
 	"time"
 
 	"github.com/LaneBirmingham/taillan/internal/config"
+	"github.com/LaneBirmingham/taillan/internal/control"
 	"github.com/LaneBirmingham/taillan/internal/doctor"
 	"github.com/LaneBirmingham/taillan/internal/helpers"
 	"github.com/LaneBirmingham/taillan/internal/invite"
@@ -51,8 +51,19 @@ const usage = `TailLAN: play multiplayer games with friends, no port forwarding 
 Usage:
   taillan                      open the app (same as "taillan ui")
   taillan ui [--no-open]       run the app; --no-open just prints its URL
-  taillan host <game|ports>    share a game from the terminal
+  taillan host <game|ports>    share a game from the terminal (servers, SSH, containers too)
   taillan join <invite>        join a friend's game from the terminal
+
+While sharing or joining (from the app, a terminal, a service or a container):
+  taillan status [--json]      what's running: the game, the room, friends, the connection
+  taillan invite [--message]   print the invite code of the game you're sharing
+  taillan lock | unlock        stop new friends joining with the invite, or allow them again
+  taillan kick <friend>        remove a friend (by name); this also locks the room
+  taillan stop [--all]         stop sharing, or leave the game you joined
+
+Settings and games:
+  taillan name [new name]      show or change the name friends see
+  taillan retire <game>        retire a kept invite code (host --keep) so it stops working
   taillan games [search]       list known games
   taillan game <command>       add, check and inspect game profiles:
       new                        create a profile (asks a few questions)
@@ -65,18 +76,29 @@ Usage:
   taillan licenses             show the licenses of TailLAN and its components
   taillan version
 
+Run "taillan <command> -h" for its flags. The flags of ui, host and join can
+also be set with environment variables: TAILLAN_ and the flag name in capitals,
+such as TAILLAN_KEEP=1 or TAILLAN_DISPLAY_NAME="Lane's server".
+
 Examples:
   taillan host minecraft-java
+  taillan host valheim --keep --display-name "Lane's server"
   taillan host "7777/udp, 27015/tcp" --name "My Game"
+  taillan host minecraft-java --target mc-server --port 25566
   taillan join TL1-...
+
+Servers and containers: https://github.com/LaneBirmingham/taillan/blob/main/docs/server.md
 `
 
 func main() {
 	session.Version = version
 	args := os.Args[1:]
 	cmd := "ui"
-	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
-		cmd, args = args[0], args[1:]
+	if len(args) > 0 {
+		switch a := args[0]; {
+		case !strings.HasPrefix(a, "-"), a == "--version", a == "-v", a == "-h", a == "-help", a == "--help":
+			cmd, args = a, args[1:]
+		}
 	}
 	// Pasting an invite as the only argument means "join".
 	if strings.HasPrefix(cmd, invite.Prefix) {
@@ -96,6 +118,22 @@ func main() {
 		err = runGame(args)
 	case "detect", "ports":
 		err = runDetect(args)
+	case "status":
+		err = runStatus(args)
+	case "invite":
+		err = runInvite(args)
+	case "lock":
+		err = runLock(args, true)
+	case "unlock":
+		err = runLock(args, false)
+	case "kick", "remove":
+		err = runKick(args)
+	case "stop", "leave":
+		err = runStop(args)
+	case "name":
+		err = runName(args)
+	case "retire":
+		err = runRetire(args)
 	case "doctor":
 		err = runDoctor()
 	case "helpers":
@@ -106,11 +144,15 @@ func main() {
 		fmt.Println("taillan", version)
 	case "licenses", "license":
 		fmt.Print(licenseText, "\n", thirdPartyNotices)
-	case "help", "-h", "--help":
+	case "help", "-h", "-help", "--help":
 		fmt.Print(usage)
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command %q\n\n%s", cmd, usage)
 		os.Exit(2)
+	}
+	var code exitCode
+	if errors.As(err, &code) {
+		os.Exit(int(code))
 	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "Error:", err)
@@ -122,48 +164,70 @@ func openStore() (*profile.Store, error) {
 	return profile.NewStore(config.GamesDir())
 }
 
+// interrupt returns a context that ends on Ctrl+C, on SIGTERM (from a
+// service manager or "docker stop"), and when the terminal or SSH
+// session closes (SIGHUP), so friends hear that the game ended. Under
+// nohup, which asks to survive the terminal closing, SIGHUP is left
+// ignored.
 func interrupt() (context.Context, context.CancelFunc) {
-	return signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	sigs := []os.Signal{os.Interrupt, syscall.SIGTERM}
+	if !signal.Ignored(syscall.SIGHUP) {
+		sigs = append(sigs, syscall.SIGHUP)
+	}
+	return signal.NotifyContext(context.Background(), sigs...)
+}
+
+// serveControl serves app's API on a random local port and registers
+// it, so other taillan commands (status, kick, stop...) can drive this
+// session. rec says what it is (Kind, and for hosts Game and Keep). It
+// returns the record, and a function that unregisters it and stops the
+// server, letting a request in flight (such as the "stop" that ended
+// the session) finish first.
+func serveControl(app *ui.App, rec control.Instance) (control.Instance, func()) {
+	ln, err := app.ListenAddr("127.0.0.1:0")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Note: other taillan commands won't see this session (%v)\n", err)
+		return control.Instance{}, func() {}
+	}
+	srv := &http.Server{Handler: app.Handler(), ReadHeaderTimeout: 10 * time.Second}
+	go srv.Serve(ln)
+	rec.URL, rec.Token, rec.PID, rec.Started = app.URL, app.Token, os.Getpid(), time.Now()
+	rec, unregister, err := control.Register(rec)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Note: other taillan commands won't see this session (%v)\n", err)
+		unregister = func() {}
+	}
+	return rec, func() {
+		unregister()
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		srv.Shutdown(ctx)
+	}
 }
 
 // --- ui ---
 
-type instance struct {
-	URL   string `json:"url"`
-	Token string `json:"token"`
-	PID   int    `json:"pid"`
-}
-
-func instancePath() string { return filepath.Join(config.Dir(), "instance.json") }
-
 // existingInstance returns the launch URL of an already-running
-// TailLAN, so a second launch just brings up its window.
+// TailLAN app, so a second launch just brings up its window.
 func existingInstance() string {
-	data, err := os.ReadFile(instancePath())
-	if err != nil {
-		return ""
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	for _, in := range control.Running(ctx) {
+		if in.Kind == "app" {
+			return in.URL + "/?t=" + in.Token
+		}
 	}
-	var in instance
-	if json.Unmarshal(data, &in) != nil || in.URL == "" {
-		return ""
-	}
-	cl := &http.Client{Timeout: time.Second}
-	resp, err := cl.Get(in.URL + "/api/ping?t=" + in.Token)
-	if err != nil {
-		return ""
-	}
-	resp.Body.Close()
-	if resp.StatusCode != 200 {
-		return ""
-	}
-	return in.URL + "/?t=" + in.Token
+	return ""
 }
 
 func runUI(args []string) error {
 	fs := flag.NewFlagSet("ui", flag.ExitOnError)
 	noOpen := fs.Bool("no-open", false, "don't open a window; just print the URL")
 	stay := fs.Bool("stay", false, "keep running when the window is closed and nothing is shared")
-	fs.Parse(args)
+	fs.Usage = commandUsage(fs, "ui", "Runs the app. With --no-open --stay it keeps running headless; reach its window\nover SSH with: ssh -L 47800:127.0.0.1:47800 <server>, then open the URL it prints.", true)
+	if _, err := parseArgs(fs, args, true); err != nil {
+		return err
+	}
 
 	if u := existingInstance(); u != "" {
 		fmt.Println("TailLAN is already running; opening its window.")
@@ -191,12 +255,12 @@ func runUI(args []string) error {
 	defer stop()
 	app.Quit = stop
 
-	os.MkdirAll(config.Dir(), 0o700)
-	in, _ := json.Marshal(instance{URL: app.URL, Token: app.Token, PID: os.Getpid()})
-	os.WriteFile(instancePath(), in, 0o600)
-	defer os.Remove(instancePath())
-
 	go app.Serve(ctx, ln)
+	if self, unregister, err := control.Register(control.Instance{URL: app.URL, Token: app.Token, PID: os.Getpid(), Kind: "app", Started: time.Now()}); err == nil {
+		defer unregister()
+		app.KeepCheck = keepCheck(self)
+	}
+	os.Remove(filepath.Join(config.Dir(), "instance.json")) // where versions before run/ kept it
 	fmt.Printf("TailLAN %s is running.\n", version)
 	fmt.Printf("  Window: %s\n", app.LaunchURL())
 	fmt.Println("  Close this terminal (or press Ctrl+C) to quit. Closing the window keeps any game you're sharing running.")
@@ -229,15 +293,18 @@ func runHost(args []string) error {
 	fs := flag.NewFlagSet("host", flag.ExitOnError)
 	name := fs.String("name", "", "game name, when sharing by port numbers")
 	extra := fs.String("extra", "", "extra ports to share too, e.g. \"64738/both\"")
-	target := fs.String("target", "127.0.0.1", "IP of the machine running the game server")
-	keep := fs.Bool("keep", false, "keep the same invite code for next time")
-	port := fs.Uint("port", 0, "where the game listens on this machine, if not its usual port (first port only)")
-	fs.Usage = func() {
-		fmt.Fprint(os.Stderr, "Usage: taillan host <game-id | ports> [flags]\n\n")
-		fs.PrintDefaults()
+	target := fs.String("target", "127.0.0.1", "where the game server runs: this machine, another device's IP, or a host name\n(such as a container's service name)")
+	port := fs.String("port", "", "where the game listens, if not on its usual port: \"7777\", or one per port group: \"7777,8888\"")
+	keep := fs.Bool("keep", false, "keep the same invite code for next time (the key is saved in your config folder)")
+	display := fs.String("display-name", "", "the name friends see (default: your saved name, see \"taillan name\")")
+	inviteFile := fs.String("invite-file", "", "write the invite code to this file while sharing (removed when sharing stops)")
+	printInvite := fs.Bool("print-invite", true, "print the invite code; set to false if others can read your logs,\nand get it with \"taillan invite\" or --invite-file")
+	fs.Usage = commandUsage(fs, "host <game-id | ports>", "Shares a game until Ctrl+C, SIGTERM or \"taillan stop\". The game can also be set\nwith TAILLAN_GAME.", true)
+	pos, err := parseArgs(fs, args, true)
+	if err != nil {
+		return err
 	}
-	game, rest := firstArg(args)
-	fs.Parse(rest)
+	game := envArg(pos, "TAILLAN_GAME")
 	if game == "" {
 		fs.Usage()
 		return errors.New("which game? Run \"taillan games\" to list them, or give ports like \"7777/udp\"")
@@ -250,51 +317,67 @@ func runHost(args []string) error {
 	if err != nil {
 		return err
 	}
-	app := ui.NewApp(store, nil, settings)
-	id, spec := game, ""
-	if store.Get(game) == nil {
-		if matches := store.Find(game); len(matches) == 1 {
-			id = matches[0].ID
-		} else if _, perr := profile.ParsePorts(game); perr == nil {
-			id, spec = "", game
-		} else if len(matches) > 1 {
-			var ids []string
-			for _, m := range matches {
-				ids = append(ids, m.ID)
-			}
-			return fmt.Errorf("%q matches several games: %s", game, strings.Join(ids, ", "))
-		} else {
-			return fmt.Errorf("no game %q; run \"taillan games\", or give ports like \"7777/udp\"", game)
-		}
+	if n := config.CleanName(*display); n != "" {
+		settings.Name = n
 	}
-	p, err := app.ResolveGame(id, *name, spec, *extra)
+	log := session.NewLogBuffer(func(s string) { fmt.Println(s) })
+	app := ui.NewApp(store, log, settings)
+	app.Headless = true
+	p, err := hostProfile(app, store, game, *name, *extra)
 	if err != nil {
 		return err
 	}
-	log := session.NewLogBuffer(func(s string) { fmt.Println(s) })
+	targets, err := parseTargets(*port, len(p.Ports))
+	if err != nil {
+		return err
+	}
+	if _, err := session.NormalizeTarget(*target); err != nil {
+		return err
+	}
+	// Find out now, not after friends could be joining.
+	if *inviteFile != "" {
+		if err := checkWritable(*inviteFile); err != nil {
+			return fmt.Errorf("can't write the invite file there: %v", err)
+		}
+	}
 	ctx, stop := interrupt()
 	defer stop()
-	targets := map[int]uint16{}
-	if *port != 0 {
-		targets[0] = uint16(*port)
-	}
-	if len(p.Host.Steps) > 0 {
+	app.Quit = stop
+	self, cleanup := serveControl(app, control.Instance{Kind: "host", Game: p.ID, Keep: *keep})
+	defer cleanup()
+	app.KeepCheck = keepCheck(self)
+
+	if steps := terminalSteps(p.Host.Steps); len(steps) > 0 {
 		fmt.Printf("\nHosting %s:\n", p.Name)
-		for i, s := range p.Host.Steps {
+		for i, s := range steps {
 			fmt.Printf("  %d. %s\n", i+1, s)
 		}
 		fmt.Println()
 	}
-	h, err := session.StartHost(ctx, session.HostConfig{
+	h, err := startHostRetrying(ctx, app, session.HostConfig{
 		Profile: p, TargetIP: *target, Targets: targets, KeepCode: *keep,
-		HostName: settings.Name, Verbose: settings.Verbose, Log: log,
+		HostName: settings.Name, Verbose: settings.Verbose,
 	})
-	if err != nil {
+	if h == nil || err != nil {
 		return err
 	}
-	defer h.Stop()
-	fmt.Printf("\nSend this invite code to your friends (it's the key to your game; share it privately):\n\n  %s\n\n", h.Invite())
-	fmt.Println("They paste it into TailLAN's Join screen, or run: taillan join <code>")
+	defer app.Shutdown()
+	if *inviteFile != "" {
+		if err := writeInviteFile(*inviteFile, h.Invite()); err != nil {
+			return fmt.Errorf("couldn't write the invite file: %v", err)
+		}
+		defer os.Remove(*inviteFile)
+	}
+	if *printInvite {
+		fmt.Printf("\nSend this invite code to your friends (it's the key to your game; share it privately):\n\n  %s\n\n", h.Invite())
+		fmt.Println("They paste it into TailLAN's Join screen, or run: taillan join <code>")
+	} else {
+		fmt.Println("\nSharing. Get the invite code with \"taillan invite\" and send it to your friends privately.")
+	}
+	if *inviteFile != "" {
+		fmt.Println("Invite code saved to", *inviteFile)
+	}
+	fmt.Println("From another terminal: taillan status, taillan lock, taillan kick <name>, taillan stop.")
 	fmt.Println("Press Ctrl+C to stop sharing.")
 	t := time.NewTicker(5 * time.Second)
 	defer t.Stop()
@@ -302,6 +385,8 @@ func runHost(args []string) error {
 	for {
 		select {
 		case <-ctx.Done():
+			return nil
+		case <-h.Done():
 			return nil
 		case <-t.C:
 			st := h.Status()
@@ -316,13 +401,151 @@ func runHost(args []string) error {
 					parts = append(parts, fmt.Sprintf("%s (%s %s)", f.Name, f.Path.Kind, fmtMs(f.Path.LatencyMs)))
 				}
 			}
-			line := fmt.Sprintf("[%d friend(s)] %s", online, strings.Join(parts, " | "))
+			room := ""
+			if st.Locked {
+				room = ", room locked"
+			}
+			line := fmt.Sprintf("[%d friend(s)%s] %s", online, room, strings.Join(parts, " | "))
 			if line != last {
 				fmt.Println(line)
 				last = line
 			}
 		}
 	}
+}
+
+// keepCheck refuses to share a game with its kept invite while another
+// TailLAN on this machine does: two sessions with one kept invite would
+// be one identity in two places, and fight over it.
+func keepCheck(self control.Instance) func(context.Context, string) error {
+	return func(ctx context.Context, game string) error {
+		r := keptElsewhere(ctx, self, game)
+		if r == nil {
+			return nil
+		}
+		name := game
+		if h := r.State.Host; h != nil {
+			name = h.Game.Name
+		}
+		return fmt.Errorf("%s is already being shared with its kept invite (PID %d). Stop that first (taillan stop %d), or share this one with a new invite code", name, r.PID, r.PID)
+	}
+}
+
+// keptElsewhere returns another TailLAN sharing game with its kept
+// invite, or about to. Each "taillan host --keep" registers before it
+// checks, so of two started together the later one gives way; the app
+// gives way to any.
+func keptElsewhere(ctx context.Context, self control.Instance, game string) *running {
+	for _, r := range listRunning(ctx) {
+		if r.Is(self) {
+			continue
+		}
+		if h := r.State.Host; h != nil && h.KeepCode && h.Game.ID == game {
+			return &r
+		}
+		if r.Kind == "host" && r.Keep && r.Game == game && r.State.Host == nil && (self.Kind != "host" || earlier(r.Instance, self)) {
+			return &r
+		}
+	}
+	return nil
+}
+
+// earlier orders instances by start time, then PID.
+func earlier(a, b control.Instance) bool {
+	if !a.Started.Equal(b.Started) {
+		return a.Started.Before(b.Started)
+	}
+	return a.PID < b.PID
+}
+
+// hostProfile finds the game to share: a game id, a search that finds
+// exactly one game, or a list of ports.
+func hostProfile(app *ui.App, store *profile.Store, game, name, extra string) (*profile.Profile, error) {
+	id, spec := game, ""
+	if store.Get(game) == nil {
+		if matches := store.Find(game); len(matches) == 1 {
+			id = matches[0].ID
+		} else if _, perr := profile.ParsePorts(game); perr == nil {
+			id, spec = "", game
+		} else if len(matches) > 1 {
+			var ids []string
+			for _, m := range matches {
+				ids = append(ids, m.ID)
+			}
+			return nil, fmt.Errorf("%q matches several games: %s", game, strings.Join(ids, ", "))
+		} else {
+			return nil, fmt.Errorf("no game %q; run \"taillan games\", or give ports like \"7777/udp\"", game)
+		}
+	}
+	return app.ResolveGame(id, name, spec, extra)
+}
+
+// terminalSteps are a game's host steps without the last one, "Click
+// Start sharing...", which is about the app's button.
+func terminalSteps(steps []string) []string {
+	if n := len(steps); n > 0 && strings.HasPrefix(steps[n-1], "Click Start sharing") {
+		return steps[:n-1]
+	}
+	return steps
+}
+
+// startHostRetrying starts sharing, and if the network isn't there
+// yet (a server that just booted, Wi-Fi that dropped), keeps trying
+// until it is or ctx ends. It returns nil, nil if ctx ended first.
+func startHostRetrying(ctx context.Context, app *ui.App, cfg session.HostConfig) (*session.Host, error) {
+	for attempt := 1; ; attempt++ {
+		h, err := app.StartHosting(ctx, cfg)
+		if err == nil {
+			return h, nil
+		}
+		if ctx.Err() != nil {
+			return nil, nil
+		}
+		if !session.Retryable(err) {
+			return nil, err
+		}
+		wait := time.Duration(min(attempt*5, 60)) * time.Second
+		fmt.Printf("Trying again in %s (press Ctrl+C to give up)...\n", wait)
+		select {
+		case <-ctx.Done():
+			return nil, nil
+		case <-time.After(wait):
+		}
+	}
+}
+
+// checkWritable checks a file can be created at path, without creating
+// it: scripts wait for the invite file to appear.
+func checkWritable(path string) error {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	f, err := os.CreateTemp(dir, ".taillan-*")
+	if err != nil {
+		return err
+	}
+	f.Close()
+	return os.Remove(f.Name())
+}
+
+// writeInviteFile saves the invite code where only this user can read
+// it: it's the key to the game.
+func writeInviteFile(path, code string) error {
+	if dir := filepath.Dir(path); dir != "." {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return err
+		}
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, []byte(code+"\n"), 0o600); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	return nil
 }
 
 func fmtMs(ms float64) string {
@@ -332,36 +555,22 @@ func fmtMs(ms float64) string {
 	return fmt.Sprintf("%.0fms", ms)
 }
 
-// firstArg splits off the first non-flag argument so flags may come
-// before or after it.
-func firstArg(args []string) (string, []string) {
-	for i, a := range args {
-		if !strings.HasPrefix(a, "-") {
-			if i > 0 && !strings.Contains(args[i-1], "=") && flagTakesValue(args[i-1]) {
-				continue
-			}
-			return a, append(append([]string(nil), args[:i]...), args[i+1:]...)
-		}
-	}
-	return "", args
-}
-
-func flagTakesValue(f string) bool {
-	switch strings.TrimLeft(f, "-") {
-	case "name", "extra", "target", "port":
-		return true
-	}
-	return false
-}
-
 // --- join ---
 
 func runJoin(args []string) error {
 	fs := flag.NewFlagSet("join", flag.ExitOnError)
-	allowLAN := fs.Bool("allow-lan", false, "let other devices on your LAN use the forwarded ports")
-	code, rest := firstArg(args)
-	fs.Parse(rest)
+	allowLAN := fs.Bool("allow-lan", false, "let other devices on your LAN use the forwarded ports the game marks for LAN play")
+	display := fs.String("display-name", "", "the name the host sees (default: your saved name, see \"taillan name\")")
+	fs.Usage = commandUsage(fs, "join <invite>", "Joins until Ctrl+C, SIGTERM, \"taillan stop\" or the host stops. The invite can\nalso be set with TAILLAN_INVITE.", true)
+	pos, err := parseArgs(fs, args, true)
+	if err != nil {
+		return err
+	}
+	code := envArg(pos, "TAILLAN_INVITE")
 	if code == "" {
+		if !interactive() {
+			return errors.New("no invite code: give it as an argument (taillan join TL1-...) or in TAILLAN_INVITE")
+		}
 		fmt.Print("Paste the invite code: ")
 		line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
 		code = strings.TrimSpace(line)
@@ -378,21 +587,29 @@ func runJoin(args []string) error {
 	if err != nil {
 		return err
 	}
+	if n := config.CleanName(*display); n != "" {
+		settings.Name = n
+	}
 	p, err := session.JoinProfile(inv, store.Builtin(inv.GameID))
 	if err != nil {
 		return err
 	}
 	log := session.NewLogBuffer(func(s string) { fmt.Println(s) })
-	j, err := session.StartJoin(session.JoinConfig{
+	app := ui.NewApp(store, log, settings)
+	app.Headless = true
+	ctx, stop := interrupt()
+	defer stop()
+	app.Quit = stop
+	_, cleanup := serveControl(app, control.Instance{Kind: "join"})
+	defer cleanup()
+	j, err := app.StartJoining(session.JoinConfig{
 		Invite: inv, Profile: p, Name: settings.Name, Key: settings.ClientPrivateKey(),
-		AllowLAN: *allowLAN, Verbose: settings.Verbose, Log: log,
+		AllowLAN: *allowLAN, Verbose: settings.Verbose,
 	})
 	if err != nil {
 		return err
 	}
-	defer j.Stop()
-	ctx, stop := interrupt()
-	defer stop()
+	defer app.Shutdown()
 	st := j.Status()
 	fmt.Printf("\nJoining %s's %s. In the game:\n", hostOr(inv.HostName), p.Name)
 	for i, s := range st.Steps {
@@ -406,6 +623,8 @@ func runJoin(args []string) error {
 		select {
 		case <-ctx.Done():
 			return nil
+		case <-j.Done():
+			return nil
 		case <-t.C:
 			st := j.Status()
 			line := st.Phase
@@ -415,9 +634,6 @@ func runJoin(args []string) error {
 			if line != last {
 				fmt.Println("Status:", line)
 				last = line
-			}
-			if j.Ended() {
-				return nil
 			}
 		}
 	}
@@ -592,8 +808,8 @@ func runDetect(args []string) error {
 	fs := flag.NewFlagSet("detect", flag.ExitOnError)
 	watch := fs.Bool("watch", false, "snapshot now, then show only ports opened after you start the game")
 	all := fs.Bool("all", false, "include TailLAN's own ports")
-	filter, rest := firstArg(args)
-	fs.Parse(rest)
+	pos, _ := parseArgs(fs, args, false)
+	filter := strings.Join(pos, " ")
 	list := func() ([]portscan.Socket, error) {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()

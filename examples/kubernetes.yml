@@ -1,0 +1,81 @@
+# A Minecraft server with TailLAN as a sidecar. Containers in a pod
+# share one network, so TailLAN reaches the server on 127.0.0.1 and
+# either container can restart on its own.
+#
+#   kubectl apply -f kubernetes.yml
+#   kubectl exec deploy/minecraft -c taillan -- taillan invite
+#   kubectl exec deploy/minecraft -c taillan -- taillan status
+#
+# No Service or Ingress is needed: friends come in through TailLAN.
+# More setups: docs/server.md.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: minecraft
+spec:
+  # One pod at a time: two copies of a kept invite (--keep) would fight
+  # over the same identity.
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels: { app: minecraft }
+  template:
+    metadata:
+      labels: { app: minecraft }
+    spec:
+      # Kubernetes otherwise sets variables like TAILLAN_PORT=tcp://...
+      # for any Service named "taillan", which look like settings.
+      enableServiceLinks: false
+      securityContext:
+        fsGroup: 65532
+      containers:
+        - name: minecraft
+          image: itzg/minecraft-server
+          env:
+            - { name: EULA, value: "TRUE" }
+          volumeMounts:
+            - { name: minecraft, mountPath: /data }
+        - name: taillan
+          image: ghcr.io/lanebirmingham/taillan:latest
+          args: ["host", "minecraft-java", "--keep", "--print-invite=false"]
+          env:
+            - { name: TAILLAN_DISPLAY_NAME, value: "Lane's server" }
+          volumeMounts:
+            - { name: taillan, mountPath: /data }
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities: { drop: [ALL] }
+          readinessProbe:
+            exec: { command: ["taillan", "status", "--quiet"] }
+            periodSeconds: 15
+            timeoutSeconds: 5
+          resources:
+            requests: { cpu: 20m, memory: 32Mi }
+      volumes:
+        - name: minecraft
+          persistentVolumeClaim: { claimName: minecraft }
+        - name: taillan
+          persistentVolumeClaim: { claimName: taillan }
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: minecraft
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests: { storage: 5Gi }
+---
+# Holds the kept invite key and settings. Tiny.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: taillan
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests: { storage: 16Mi }

@@ -7,6 +7,7 @@ The [main README](../README.md) shows how to host and join. This page covers eve
 - [Any other game](#any-other-game)
 - [Running TailLAN](#running-taillan)
 - [Command line](#command-line)
+- [Servers, SSH and containers](server.md)
 - [Security](#security)
 - [Limitations](#limitations)
 - [How it works](#how-it-works)
@@ -34,6 +35,7 @@ The [main README](../README.md) shows how to host and join. This page covers eve
 - **Game helpers** for the last bit of friction. For Minecraft, TailLAN finds your *Open to LAN* port by itself and lists the world in friends' **LAN worlds**.
 - **Port detector** and **network check** under *Tools* (see [Any other game](#any-other-game)).
 - **Terminal mode** for everything: `taillan host`, `taillan join`, `taillan detect`, `taillan doctor`...
+- **Runs headless** on servers, over SSH, as a service, in Docker or on Kubernetes, managed with `taillan status`, `lock`, `kick` and `stop`. See [Running TailLAN on a server](server.md).
 
 ## Built-in games
 
@@ -99,8 +101,16 @@ make release        # dist/ for Windows, macOS, Linux (amd64 + arm64)
 taillan                      open the app
 taillan host <game|ports>    share from the terminal: taillan host valheim
                              or by ports:            taillan host "7777/udp, 27015/tcp" --name "My Game"
-                             flags: --extra <ports>, --target <ip>, --port <n>, --keep
+                             flags: --keep, --target <ip|name>, --port <n[,n...]>, --extra <ports>,
+                                    --display-name <name>, --invite-file <path>, --print-invite=false
 taillan join <invite>        join from the terminal (or just: taillan TL1-...)
+taillan status [--json]      what's shared or joined right now, and who's connected
+taillan invite [--message]   print the invite code of the game you're sharing
+taillan lock | unlock        stop new friends joining with the invite, or allow them again
+taillan kick <friend>        remove a friend (this also locks the room)
+taillan stop [--all]         stop sharing, or leave a game
+taillan name [new name]      show or change the name friends see
+taillan retire <game>        retire a kept invite code
 taillan games [search]       list games
 taillan game new             add a game (asks a few questions; --from-process <name> reads ports from a running server)
 taillan game validate <f>    check game files
@@ -112,13 +122,15 @@ taillan helpers              list game helpers
 taillan licenses             licenses of TailLAN and its components
 ```
 
+`status`, `invite`, `lock`, `kick` and `stop` work on any running session: one started from the app, from `taillan host` in another terminal, or in a service or container. The flags of `host`, `join` and `ui` can also come from environment variables (`TAILLAN_KEEP=1`, `TAILLAN_TARGET=...`). For servers, SSH, Docker, Kubernetes and systemd, see [Running TailLAN on a server](server.md).
+
 ## Security
 
 - All game traffic is end-to-end encrypted by WireGuard (tailcat uses a fresh key per session and a pre-shared key inside the invite). Relays only see encrypted packets.
 - **The invite code is the key.** Anyone with it can connect while you share, so send it privately. Use **Lock room** once everyone's in. **Remove** kicks someone and locks the room, since anyone with the code could otherwise come back under a new identity.
 - Only the game's ports are reachable through the tunnel, and only to the address you chose (the host's own machine by default). Nothing else on your computer or network is exposed.
 - On joiners' machines, forwarded ports listen on `127.0.0.1` only. Ports a game marks `lan` (for LAN discovery) listen on all interfaces but accept connections only from the same computer, unless the joiner explicitly allows their LAN.
-- The UI is served on `127.0.0.1` and protected by a per-run secret, Host/Origin checks (against DNS rebinding and cross-site requests) and a strict Content Security Policy.
+- The UI is served on `127.0.0.1` and protected by a per-run secret, Host/Origin checks (against DNS rebinding and cross-site requests) and a strict Content Security Policy. Sessions started in a terminal serve the same API (without the pages) the same way, for `taillan status`, `kick` and `stop`; the secrets sit in the config folder's `run/`, readable only by you.
 - **Keep the same invite code** saves the host key in your config folder (`keys/`). Anyone you've ever sent that code to can rejoin future sessions until you click *Retire invite* in the Games tab.
 - Release binaries are built by GitHub Actions from the tagged source, with signed build provenance you can check: `gh attestation verify <file> --repo LaneBirmingham/taillan`.
 
@@ -140,7 +152,7 @@ tailcat's public relays are free but rate-limited and best-effort. Direct connec
 
 The host runs a `tailcat.Server` that only admits the game's ports and proxies each TCP connection or UDP flow to the game server. Its address (public key, pre-shared key, relay region) goes into the invite with the game's ports and steps: `TL1-` + base64url(DEFLATE(JSON)). Each friend runs a `tailcat.Client` and opens matching local listeners; every local TCP connection or UDP source gets its own stream or flow through the tunnel. A small JSON-lines control channel on a reserved tunnel port (65531) carries names, latency and a clean "host stopped" signal. Connections start through tailcat's DERP relays, and NAT traversal upgrades them to a direct path whenever possible.
 
-Code map: [`internal/session`](../internal/session) (host/join engine), [`internal/profile`](../internal/profile) + [`games/`](../games) (game profiles), [`internal/invite`](../internal/invite), [`internal/helpers`](../internal/helpers), [`internal/portscan`](../internal/portscan), [`internal/doctor`](../internal/doctor), [`internal/ui`](../internal/ui) (local web UI), [`main.go`](../main.go) (CLI).
+Code map: [`internal/session`](../internal/session) (host/join engine), [`internal/profile`](../internal/profile) + [`games/`](../games) (game profiles), [`internal/invite`](../internal/invite), [`internal/helpers`](../internal/helpers), [`internal/portscan`](../internal/portscan), [`internal/doctor`](../internal/doctor), [`internal/ui`](../internal/ui) (local web UI and API), [`internal/control`](../internal/control) (finding and driving running sessions), [`main.go`](../main.go) + [`control_cmds.go`](../control_cmds.go) (CLI), [`Dockerfile`](../Dockerfile) + [`examples/`](../examples) (servers and containers).
 
 ## Development
 

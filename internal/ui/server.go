@@ -42,12 +42,20 @@ var DownloadURL = ""
 
 // App is the running UI backend and owner of the current session.
 type App struct {
-	Store    *profile.Store
-	Log      *session.LogBuffer
-	Token    string
-	URL      string // base URL, no token
-	Quit     func()
-	settings *config.Settings
+	Store *profile.Store
+	Log   *session.LogBuffer
+	Token string
+	URL   string // base URL, no token
+	Quit  func()
+	// Headless serves only the API, not the app's pages: for
+	// "taillan host" and "taillan join" in a terminal, which other
+	// taillan commands (status, lock, kick, stop...) talk to.
+	Headless bool
+	// KeepCheck, if set, is asked before sharing a game with its kept
+	// invite, and returns an error if another TailLAN already does: one
+	// kept invite is one identity, which can't be in two places.
+	KeepCheck func(ctx context.Context, gameID string) error
+	settings  *config.Settings
 
 	mu      sync.Mutex
 	host    *session.Host
@@ -105,10 +113,24 @@ func (a *App) LaunchURL() string { return a.URL + "/?t=" + a.Token }
 // Listen binds the UI server on 127.0.0.1. It tries a stable port
 // first so browser windows from an earlier run keep working.
 func (a *App) Listen() (net.Listener, error) {
-	ln, err := net.Listen("tcp4", "127.0.0.1:47800")
+	ln, err := a.ListenAddr("127.0.0.1:47800")
 	if err != nil {
-		ln, err = net.Listen("tcp4", "127.0.0.1:0")
+		ln, err = a.ListenAddr("127.0.0.1:0")
 	}
+	return ln, err
+}
+
+// ListenAddr binds the server on addr, which must be a loopback
+// address: the API controls sessions, so it is never on the network.
+func (a *App) ListenAddr(addr string) (net.Listener, error) {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return nil, err
+	}
+	if ip := net.ParseIP(host); ip == nil || !ip.IsLoopback() || ip.To4() == nil {
+		return nil, fmt.Errorf("the TailLAN API only listens on 127.0.0.1, not %q", addr)
+	}
+	ln, err := net.Listen("tcp4", addr)
 	if err != nil {
 		return nil, err
 	}
@@ -157,6 +179,10 @@ func (a *App) Handler() http.Handler {
 	static, _ := fs.Sub(webFS, "web")
 	files := http.FileServer(http.FS(static))
 	mux.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
+		if a.Headless {
+			http.Error(w, "This TailLAN runs in a terminal. Manage it with \"taillan status\", or run \"taillan\" for the app.", http.StatusNotFound)
+			return
+		}
 		if t := r.URL.Query().Get("t"); t != "" {
 			if !a.tokenOK(t) {
 				http.Error(w, "This TailLAN link is out of date. Open TailLAN again.", http.StatusForbidden)
@@ -448,29 +474,45 @@ func (a *App) startHost(r *http.Request) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := a.claimStart(); err != nil {
-		return nil, err
-	}
-	cfg := session.HostConfig{
+	h, err := a.StartHosting(r.Context(), session.HostConfig{
 		Profile:  p,
 		TargetIP: strings.TrimSpace(req.TargetIP),
 		Targets:  req.Targets,
 		KeepCode: req.KeepCode,
 		HostName: a.settings.Name,
 		Verbose:  a.settings.Verbose,
-		Log:      a.Log,
+	})
+	if err != nil {
+		return nil, err
 	}
-	h, err := session.StartHost(r.Context(), cfg)
+	return h.Status(), nil
+}
+
+// StartHosting starts sharing as the app's one session, logging to the
+// app's log. It fails if a session is already running or starting.
+func (a *App) StartHosting(ctx context.Context, cfg session.HostConfig) (*session.Host, error) {
+	if cfg.KeepCode && a.KeepCheck != nil && cfg.Profile != nil {
+		if err := a.KeepCheck(ctx, cfg.Profile.ID); err != nil {
+			return nil, err
+		}
+	}
+	if err := a.claimStart(); err != nil {
+		return nil, err
+	}
+	cfg.Log = a.Log
+	h, err := session.StartHost(ctx, cfg)
 	if err != nil {
 		a.finishStart(nil)
-		a.Log.Logf("Couldn't start sharing: %v", err)
+		if ctx.Err() == nil {
+			a.Log.Logf("Couldn't start sharing: %v", err)
+		}
 		return nil, err
 	}
 	if !a.finishStart(func() { a.host, a.hostCfg = h, &cfg }) {
 		h.Stop()
 		return nil, errors.New("sharing was stopped before it started")
 	}
-	return h.Status(), nil
+	return h, nil
 }
 
 // ResolveGame builds the profile to host from a saved game id or a
@@ -644,18 +686,28 @@ func (a *App) startJoin(r *http.Request) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := a.claimStart(); err != nil {
-		return nil, err
-	}
-	j, err := session.StartJoin(session.JoinConfig{
+	j, err := a.StartJoining(session.JoinConfig{
 		Invite:   inv,
 		Profile:  p,
 		Name:     a.settings.Name,
 		Key:      a.settings.ClientPrivateKey(),
 		AllowLAN: req.AllowLAN,
 		Verbose:  a.settings.Verbose,
-		Log:      a.Log,
 	})
+	if err != nil {
+		return nil, err
+	}
+	return j.Status(), nil
+}
+
+// StartJoining joins a game as the app's one session, logging to the
+// app's log. It fails if a session is already running or starting.
+func (a *App) StartJoining(cfg session.JoinConfig) (*session.Join, error) {
+	if err := a.claimStart(); err != nil {
+		return nil, err
+	}
+	cfg.Log = a.Log
+	j, err := session.StartJoin(cfg)
 	if err != nil {
 		a.finishStart(nil)
 		a.Log.Logf("Couldn't join: %v", err)
@@ -665,7 +717,7 @@ func (a *App) startJoin(r *http.Request) (any, error) {
 		j.Stop()
 		return nil, errors.New("left the game before it started")
 	}
-	return j.Status(), nil
+	return j, nil
 }
 
 func (a *App) stopJoin(*http.Request) (any, error) {
@@ -701,12 +753,9 @@ func (a *App) saveSettings(r *http.Request) (any, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if req.Name != nil {
-		n := strings.TrimSpace(*req.Name)
+		n := config.CleanName(*req.Name)
 		if n == "" {
 			return nil, errors.New("name can't be empty")
-		}
-		if r := []rune(n); len(r) > 40 {
-			n = string(r[:40])
 		}
 		a.settings.Name = n
 	}

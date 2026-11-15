@@ -1,0 +1,44 @@
+# A Valheim server running inside TailLAN's network: TailLAN reaches it
+# on 127.0.0.1 and shows whether it's up. The game server can restart
+# or update freely; if TailLAN's container is recreated, restart the
+# game server too (Compose does when you run "up" again).
+#
+#   docker compose -f compose-sidecar.yml up -d
+#   docker compose -f compose-sidecar.yml exec taillan taillan status
+#   docker compose -f compose-sidecar.yml exec taillan taillan invite
+#
+# More setups: docs/server.md.
+services:
+  taillan:
+    image: ghcr.io/lanebirmingham/taillan:latest
+    command: ["host", "valheim", "--keep"]
+    environment:
+      TAILLAN_DISPLAY_NAME: "Lane's server"
+    volumes:
+      - taillan:/data
+    # The game shares this container's network, so to also let players
+    # on your LAN connect directly, publish its ports here:
+    # ports:
+    #   - "2456-2457:2456-2457/udp"
+    restart: unless-stopped
+
+  valheim:
+    image: ghcr.io/community-valheim-tools/valheim-server
+    network_mode: "service:taillan"
+    depends_on: [taillan]
+    cap_add: [sys_nice]
+    stop_grace_period: 2m
+    environment:
+      SERVER_NAME: "Game night"
+      WORLD_NAME: "Dedicated"
+      SERVER_PASS: "change-me"     # at least 5 characters
+      SERVER_PUBLIC: "false"       # friends come in through TailLAN
+    volumes:
+      - valheim-config:/config
+      - valheim-data:/opt/valheim
+    restart: unless-stopped
+
+volumes:
+  taillan:
+  valheim-config:
+  valheim-data:

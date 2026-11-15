@@ -148,3 +148,49 @@ func TestOneSessionAtATime(t *testing.T) {
 		t.Error("finishStart dropped a session nobody stopped")
 	}
 }
+
+// TestHeadless checks that a terminal session's API ("taillan host"
+// and "taillan join") serves no pages, keeps the same guards, and only
+// listens on loopback.
+func TestHeadless(t *testing.T) {
+	a, srv := newTestApp(t)
+	a.Headless = true
+	get := func(path string, withCookie bool) int {
+		req, _ := http.NewRequest("GET", srv.URL+path, nil)
+		if withCookie {
+			req.AddCookie(&http.Cookie{Name: "taillan", Value: a.Token})
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+	for path, want := range map[string]int{"/": 404, "/app.js": 404, "/?t=" + a.Token: 404} {
+		if got := get(path, true); got != want {
+			t.Errorf("GET %s: %d, want %d", path, got, want)
+		}
+	}
+	if got := get("/api/state", true); got != 200 {
+		t.Errorf("API with cookie: %d", got)
+	}
+	if got := get("/api/state", false); got != 403 {
+		t.Errorf("API without cookie: %d", got)
+	}
+
+	for _, addr := range []string{"0.0.0.0:0", "192.0.2.1:0", "[::]:0", "localhost:0"} {
+		if ln, err := a.ListenAddr(addr); err == nil {
+			ln.Close()
+			t.Errorf("listened on %s", addr)
+		}
+	}
+	ln, err := a.ListenAddr("127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln.Close()
+	if !strings.HasPrefix(a.URL, "http://127.0.0.1:") {
+		t.Errorf("URL = %q", a.URL)
+	}
+}

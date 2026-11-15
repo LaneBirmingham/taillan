@@ -1,0 +1,33 @@
+# Share a game as a background service that starts at boot, without
+# root: one instance per game id.
+#
+#   mkdir -p ~/.config/systemd/user
+#   cp taillan@.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now taillan@valheim
+#   loginctl enable-linger "$USER"     # keep running when you log out
+#
+#   taillan status                     # from any SSH session
+#   taillan invite --game valheim
+#   journalctl --user -u taillan@valheim -f
+#
+# Per-game settings go in ~/.config/taillan/valheim.env, for example:
+#   TAILLAN_TARGET=192.168.1.20
+#   TAILLAN_PORT=2466
+#   TAILLAN_DISPLAY_NAME=Lane's server
+# See docs/server.md.
+[Unit]
+Description=TailLAN: share %i with friends
+Documentation=https://github.com/LaneBirmingham/taillan/blob/main/docs/server.md
+
+[Service]
+EnvironmentFile=-%h/.config/taillan/%i.env
+# Change the path if taillan is somewhere else. TailLAN retries until
+# the network is up, so it needs no network-online ordering.
+ExecStart=%h/.local/bin/taillan host %i --keep
+Restart=on-failure
+RestartSec=10
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=default.target
