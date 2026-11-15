@@ -1,7 +1,19 @@
 name: Release
 on:
-  push:
-    tags: ["v*"]
+  # Called by release-please.yml when its release PR is merged.
+  workflow_call:
+    inputs:
+      tag:
+        description: Version tag to build, e.g. v1.2.3
+        required: true
+        type: string
+  # Rebuild an existing tag by hand (Actions → Release → Run workflow).
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Version tag to build, e.g. v1.2.3
+        required: true
+        type: string
 
 permissions:
   contents: write     # create the release
@@ -12,7 +24,7 @@ jobs:
   release:
     runs-on: ubuntu-latest
     env:
-      TAG: ${{ github.ref_name }}
+      TAG: ${{ inputs.tag }}
     steps:
       # The tag ends up in shell commands (and in the binary through
       # make), so accept only plain version tags.
@@ -21,6 +33,7 @@ jobs:
           [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]] || { echo "unexpected tag: $TAG"; exit 1; }
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
+          ref: ${{ inputs.tag }}
           persist-credentials: false
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
@@ -40,10 +53,19 @@ jobs:
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: dist/taillan-*
+      # release-please drafts the release with the changelog as notes;
+      # attach the files, then publish it so "latest" never lacks them.
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$TAG" dist/* --generate-notes --title "TailLAN $TAG"
+          GH_REPO: ${{ github.repository }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/* --clobber
+            gh release edit "$TAG" --title "TailLAN $TAG" --draft=false
+          else
+            gh release create "$TAG" dist/* --verify-tag --generate-notes --title "TailLAN $TAG"
+          fi
 
   # The container image (docs/server.md), for linux/amd64 and arm64.
   # The first push creates the ghcr.io package as private: make it
@@ -57,13 +79,14 @@ jobs:
       id-token: write     # sign the build provenance
       attestations: write # store it
     env:
-      TAG: ${{ github.ref_name }}
+      TAG: ${{ inputs.tag }}
     steps:
       - name: Check tag
         run: |
           [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]] || { echo "unexpected tag: $TAG"; exit 1; }
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
+          ref: ${{ inputs.tag }}
           persist-credentials: false
       - name: Build and push
         env:

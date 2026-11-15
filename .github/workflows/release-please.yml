@@ -1,0 +1,42 @@
+name: Release Please
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  # Keeps a "chore(main): release x.y.z" pull request open with the next
+  # version and changelog, worked out from Conventional Commit messages
+  # (feat:, fix:, feat!:). Merging it tags the release and creates it as
+  # a draft; the release job below fills it in and publishes it.
+  release-please:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write      # tag and draft the release
+      pull-requests: write # open and update the release PR
+      issues: write        # label the release PR
+    outputs:
+      created: ${{ steps.rp.outputs.release_created }}
+      tag: ${{ steps.rp.outputs.tag_name }}
+    steps:
+      - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+        id: rp
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+  # Tags pushed with GITHUB_TOKEN don't start other workflows, so the
+  # build is called from here instead of on the tag push.
+  release:
+    needs: release-please
+    if: ${{ needs.release-please.outputs.created == 'true' }}
+    permissions:
+      contents: write
+      packages: write
+      id-token: write
+      attestations: write
+    uses: ./.github/workflows/release.yml
+    with:
+      tag: ${{ needs.release-please.outputs.tag }}

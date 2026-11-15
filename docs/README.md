@@ -164,4 +164,4 @@ make notices    # refresh THIRD_PARTY_NOTICES.txt after changing go.mod
 
 Run two copies on one machine (host and friend) by giving each its own config folder: `TAILLAN_HOME=/tmp/friend taillan`. The second one picks a free UI port, and joined games shift to free local ports automatically.
 
-Game profiles are especially welcome: see [CONTRIBUTING.md](../CONTRIBUTING.md). Releases are built by GitHub Actions when a `v*` tag is pushed.
+Game profiles are especially welcome: see [CONTRIBUTING.md](../CONTRIBUTING.md). Releases are automated with [release-please](https://github.com/googleapis/release-please): it keeps a release pull request open with the next version and changelog, and merging it tags the version and has GitHub Actions build and publish the release and container image.
