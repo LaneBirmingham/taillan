@@ -32,11 +32,16 @@ TailLAN runs fully from the command line: no window, no browser, nothing to clic
 
 ```sh
 ssh my-server
-curl -fLo ~/.local/bin/taillan https://github.com/LaneBirmingham/taillan/releases/latest/download/taillan-linux-amd64
-chmod +x ~/.local/bin/taillan     # use taillan-linux-arm64 on a Raspberry Pi or ARM VPS
-taillan name "Lane's server"      # the name friends see
+# On an ARM server (64-bit Raspberry Pi OS, ARM VPS), use taillan-linux-arm64.
+curl -fL --create-dirs -o ~/.local/bin/taillan \
+  https://github.com/LaneBirmingham/taillan/releases/latest/download/taillan-linux-amd64
+chmod +x ~/.local/bin/taillan
+export PATH="$HOME/.local/bin:$PATH"   # if "taillan" isn't found; add it to ~/.profile to keep it
+taillan name "Lane's server"           # the name friends see
 taillan host valheim --keep
 ```
+
+There are builds for 64-bit Linux on x86 (amd64) and ARM (arm64). 32-bit systems aren't supported.
 
 Start the game's dedicated server first (or after: TailLAN shows whether it's running). `taillan host` prints the invite code; send it to your friends privately. `--keep` gives you the same code every time, so a regular group only needs it once.
 
@@ -61,6 +66,8 @@ From any terminal on the same machine, as the same user (another SSH session, `d
 | `taillan retire <game>` | Retire a kept invite code: next time you share that game, it gets a new one. |
 
 These work the same whether the game was started with `taillan host`, from the app's window, as a service or in a container. If several games are running, say which with `--game <id>` (or the process ID): `taillan kick sam --game valheim`.
+
+In a container, `taillan stop` ends the container's main process, so a restart policy (`restart: unless-stopped`, or any Kubernetes Deployment) starts sharing again straight away, with the same kept code. To stop sharing for good, stop the container instead: `docker compose stop taillan`, `docker stop`, or `kubectl scale deploy/<name> --replicas=0`. In the [sidecar](#sidecar-sharing-the-network) setup, stop the game server too.
 
 ## Settings and environment variables
 
@@ -192,7 +199,7 @@ services:
 
 Full file: [`examples/compose-sidecar.yml`](../examples/compose-sidecar.yml).
 
-Why the game joins TailLAN's network and not the other way round: a container that borrows another's network loses it when that one restarts. Game servers restart for updates and crashes far more often than TailLAN does, so the game is the one that borrows. If TailLAN's container is recreated, `docker compose up -d` recreates the game server too. To let LAN players connect directly, publish the game's ports on the `taillan` service, since that's where the network lives.
+Why the game joins TailLAN's network and not the other way round: a container that borrows another's network loses it when that one restarts. Game servers restart for updates and crashes far more often than TailLAN does, so the game is the one that borrows. If TailLAN's container restarts (after `taillan stop`, a crash, or a reboot), the game server is left without a network until it restarts too: `docker compose restart valheim`. If TailLAN's container is recreated, `docker compose up -d` recreates the game server too. To let LAN players connect directly, publish the game's ports on the `taillan` service, since that's where the network lives.
 
 ### Host networking
 
@@ -305,10 +312,10 @@ The app only ever listens on `127.0.0.1` and needs the secret in that link, so a
 ## Scripts and automation
 
 - **Invite in a file:** `--invite-file "$XDG_RUNTIME_DIR/taillan/invite.txt"` writes the code once it's ready and deletes it when sharing stops. Wait for the file to appear to know sharing has started.
-- **Status as JSON:** `taillan status --json` lists every running session: game, invite, room lock, port groups and friends with their connection.
+- **Status as JSON:** `taillan status --json` lists every running session: game, invite, room lock, port groups and friends with their connection. A session still starting has `"starting": true` and `"session": null`.
 
   ```sh
-  taillan status --json | jq -r '.[] | select(.kind=="host") | .session.friends[] | select(.online) | .name'
+  taillan status --json | jq -r '.[] | .session.friends[]? | select(.online) | .name'
   ```
 
 - **Exit codes:** `taillan status` exits 0 while a game is shared (or joined and connected) and 1 otherwise; `--quiet` prints nothing. Good for health checks and monitoring.

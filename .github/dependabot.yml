@@ -11,3 +11,9 @@ updates:
     directory: /
     schedule:
       interval: monthly
+    ignore:
+      # The image builds with the Go in go.mod and mise.toml (CI checks
+      # they match), so new Go versions are bumped there by hand. Digest
+      # updates of the same version still come through.
+      - dependency-name: golang
+        update-types: ["version-update:semver-major", "version-update:semver-minor", "version-update:semver-patch"]

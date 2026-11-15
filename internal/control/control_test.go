@@ -66,6 +66,10 @@ func TestRegisterAndRunning(t *testing.T) {
 	// namespace: its 127.0.0.1 isn't ours, so its record stays.
 	other, _ := json.Marshal(Instance{URL: deadURL, Token: "y", PID: 1, Kind: "host", NetNS: "net:[1]"})
 	os.WriteFile(filepath.Join(Dir(), "1-other.json"), other, 0o600)
+	// ...unless it stopped beating long ago: that container is gone.
+	old := filepath.Join(Dir(), "1-gone.json")
+	os.WriteFile(old, other, 0o600)
+	os.Chtimes(old, time.Now().Add(-time.Hour), time.Now().Add(-time.Hour))
 
 	got := Running(ctx)
 	if len(got) != 1 || got[0].PID != 1001 {
@@ -98,6 +102,43 @@ func TestRegisterAndRunning(t *testing.T) {
 	if len(Running(ctx)) != 0 {
 		t.Error("unregistered instance still listed")
 	}
+}
+
+// TestHeartbeat checks a record is kept fresh, and put back if another
+// namespace removed it as stale.
+func TestHeartbeat(t *testing.T) {
+	t.Setenv("TAILLAN_HOME", t.TempDir())
+	heartbeat = 20 * time.Millisecond
+	defer func() { heartbeat = time.Minute }()
+	rec, unregister, err := Register(Instance{URL: "http://127.0.0.1:1", Token: "x", PID: 5})
+	if err != nil {
+		t.Fatal(err)
+	}
+	past := time.Now().Add(-time.Hour)
+	os.Chtimes(rec.file, past, past)
+	waitFor(t, func() bool {
+		fi, err := os.Stat(rec.file)
+		return err == nil && fi.ModTime().After(past.Add(time.Minute))
+	})
+	os.Remove(rec.file)
+	waitFor(t, func() bool { _, err := os.Stat(rec.file); return err == nil })
+	unregister()
+	unregister() // twice is fine
+	time.Sleep(3 * heartbeat)
+	if _, err := os.Stat(rec.file); err == nil {
+		t.Error("record came back after unregistering")
+	}
+}
+
+func waitFor(t *testing.T, ok func() bool) {
+	t.Helper()
+	for range 100 {
+		if ok() {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("timed out")
 }
 
 // TestRegisterSamePID checks two records with one PID (each container's

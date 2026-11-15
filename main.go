@@ -256,9 +256,11 @@ func runUI(args []string) error {
 	app.Quit = stop
 
 	go app.Serve(ctx, ln)
-	if _, unregister, err := control.Register(control.Instance{URL: app.URL, Token: app.Token, PID: os.Getpid(), Kind: "app", Started: time.Now()}); err == nil {
+	if self, unregister, err := control.Register(control.Instance{URL: app.URL, Token: app.Token, PID: os.Getpid(), Kind: "app", Started: time.Now()}); err == nil {
 		defer unregister()
+		app.KeepCheck = keepCheck(self)
 	}
+	os.Remove(filepath.Join(config.Dir(), "instance.json")) // where versions before run/ kept it
 	fmt.Printf("TailLAN %s is running.\n", version)
 	fmt.Printf("  Window: %s\n", app.LaunchURL())
 	fmt.Println("  Close this terminal (or press Ctrl+C) to quit. Closing the window keeps any game you're sharing running.")
@@ -334,23 +336,16 @@ func runHost(args []string) error {
 	}
 	// Find out now, not after friends could be joining.
 	if *inviteFile != "" {
-		if err := writeInviteFile(*inviteFile, ""); err != nil {
+		if err := checkWritable(*inviteFile); err != nil {
 			return fmt.Errorf("can't write the invite file there: %v", err)
 		}
-		os.Remove(*inviteFile)
 	}
 	ctx, stop := interrupt()
 	defer stop()
 	app.Quit = stop
 	self, cleanup := serveControl(app, control.Instance{Kind: "host", Game: p.ID, Keep: *keep})
 	defer cleanup()
-	// Two sessions with one kept invite would be one identity in two
-	// places, and fight over it.
-	if *keep {
-		if r := keptElsewhere(ctx, self, p.ID); r != nil {
-			return fmt.Errorf("%s is already being shared with its kept invite (PID %d). Stop that first (taillan stop %d), or share this copy without --keep", p.Name, r.PID, r.PID)
-		}
-	}
+	app.KeepCheck = keepCheck(self)
 
 	if steps := terminalSteps(p.Host.Steps); len(steps) > 0 {
 		fmt.Printf("\nHosting %s:\n", p.Name)
@@ -419,9 +414,27 @@ func runHost(args []string) error {
 	}
 }
 
+// keepCheck refuses to share a game with its kept invite while another
+// TailLAN on this machine does: two sessions with one kept invite would
+// be one identity in two places, and fight over it.
+func keepCheck(self control.Instance) func(context.Context, string) error {
+	return func(ctx context.Context, game string) error {
+		r := keptElsewhere(ctx, self, game)
+		if r == nil {
+			return nil
+		}
+		name := game
+		if h := r.State.Host; h != nil {
+			name = h.Game.Name
+		}
+		return fmt.Errorf("%s is already being shared with its kept invite (PID %d). Stop that first (taillan stop %d), or share this one with a new invite code", name, r.PID, r.PID)
+	}
+}
+
 // keptElsewhere returns another TailLAN sharing game with its kept
 // invite, or about to. Each "taillan host --keep" registers before it
-// checks, so of two started together the later one gives way.
+// checks, so of two started together the later one gives way; the app
+// gives way to any.
 func keptElsewhere(ctx context.Context, self control.Instance, game string) *running {
 	for _, r := range listRunning(ctx) {
 		if r.Is(self) {
@@ -430,7 +443,7 @@ func keptElsewhere(ctx context.Context, self control.Instance, game string) *run
 		if h := r.State.Host; h != nil && h.KeepCode && h.Game.ID == game {
 			return &r
 		}
-		if r.Kind == "host" && r.Keep && r.Game == game && r.State.Host == nil && earlier(r.Instance, self) {
+		if r.Kind == "host" && r.Keep && r.Game == game && r.State.Host == nil && (self.Kind != "host" || earlier(r.Instance, self)) {
 			return &r
 		}
 	}
@@ -499,6 +512,21 @@ func startHostRetrying(ctx context.Context, app *ui.App, cfg session.HostConfig)
 		case <-time.After(wait):
 		}
 	}
+}
+
+// checkWritable checks a file can be created at path, without creating
+// it: scripts wait for the invite file to appear.
+func checkWritable(path string) error {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	f, err := os.CreateTemp(dir, ".taillan-*")
+	if err != nil {
+		return err
+	}
+	f.Close()
+	return os.Remove(f.Name())
 }
 
 // writeInviteFile saves the invite code where only this user can read

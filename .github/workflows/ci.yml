@@ -42,6 +42,11 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           persist-credentials: false
+      - name: Image builds with the Go in go.mod
+        run: |
+          want=$(awk '$1 == "go" { print $2 }' go.mod)
+          got=$(sed -n 's/^FROM .*golang:\([0-9.]*\)@.*/\1/p' Dockerfile)
+          [[ "$got" == "$want" ]] || { echo "Dockerfile builds with Go $got, go.mod says $want: update them together"; exit 1; }
       - name: Build image
         run: docker build -t taillan:ci .
       - name: Smoke test

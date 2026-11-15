@@ -519,6 +519,14 @@ func runStop(args []string) error {
 			fmt.Printf("Left %s's %s.\n", hostOr(j.HostName), j.Game.Name)
 		}
 	}
+	for _, r := range targets {
+		if r.PID == 1 {
+			// "taillan stop" inside a container ends its main process,
+			// and a restart policy starts it again.
+			fmt.Println(`Note: this TailLAN is a container's main process. If the container restarts automatically, it will start sharing again: to stop for good, stop the container ("docker stop", or scale the deployment to 0).`)
+			break
+		}
+	}
 	return errors.Join(errs...)
 }
 

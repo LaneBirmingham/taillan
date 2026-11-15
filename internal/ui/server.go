@@ -51,7 +51,11 @@ type App struct {
 	// "taillan host" and "taillan join" in a terminal, which other
 	// taillan commands (status, lock, kick, stop...) talk to.
 	Headless bool
-	settings *config.Settings
+	// KeepCheck, if set, is asked before sharing a game with its kept
+	// invite, and returns an error if another TailLAN already does: one
+	// kept invite is one identity, which can't be in two places.
+	KeepCheck func(ctx context.Context, gameID string) error
+	settings  *config.Settings
 
 	mu      sync.Mutex
 	host    *session.Host
@@ -487,6 +491,11 @@ func (a *App) startHost(r *http.Request) (any, error) {
 // StartHosting starts sharing as the app's one session, logging to the
 // app's log. It fails if a session is already running or starting.
 func (a *App) StartHosting(ctx context.Context, cfg session.HostConfig) (*session.Host, error) {
+	if cfg.KeepCode && a.KeepCheck != nil && cfg.Profile != nil {
+		if err := a.KeepCheck(ctx, cfg.Profile.ID); err != nil {
+			return nil, err
+		}
+	}
 	if err := a.claimStart(); err != nil {
 		return nil, err
 	}

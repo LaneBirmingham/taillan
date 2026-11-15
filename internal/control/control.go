@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -65,6 +66,15 @@ func netNS() string {
 	return ns
 }
 
+// A running instance touches its record every heartbeat. A record from
+// another network namespace (another container) can't be pinged, so
+// one not touched for staleAfter is taken to be from an instance that's
+// gone (a container that was killed or recreated) and removed.
+var (
+	heartbeat  = time.Minute
+	staleAfter = 10 * time.Minute
+)
+
 // Register records a running instance so other taillan commands can
 // find it. It returns the record and a function that removes it; call
 // that on exit.
@@ -81,15 +91,54 @@ func Register(in Instance) (Instance, func(), error) {
 	b := make([]byte, 4)
 	rand.Read(b)
 	in.file = filepath.Join(Dir(), fmt.Sprintf("%d-%x.json", in.PID, b))
-	tmp := in.file + ".tmp"
+	if err := writeRecord(in.file, data); err != nil {
+		return in, func() {}, err
+	}
+	var mu sync.Mutex
+	stopped := false
+	done := make(chan struct{})
+	go func() {
+		t := time.NewTicker(heartbeat)
+		defer t.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-t.C:
+			}
+			mu.Lock()
+			if !stopped {
+				now := time.Now()
+				if err := os.Chtimes(in.file, now, now); errors.Is(err, fs.ErrNotExist) {
+					// Removed while we're still here (taken for stale
+					// after a long sleep): put it back.
+					writeRecord(in.file, data)
+				}
+			}
+			mu.Unlock()
+		}
+	}()
+	return in, func() {
+		mu.Lock()
+		defer mu.Unlock()
+		if !stopped {
+			stopped = true
+			close(done)
+			os.Remove(in.file)
+		}
+	}, nil
+}
+
+func writeRecord(path string, data []byte) error {
+	tmp := path + ".tmp"
 	if err := os.WriteFile(tmp, data, 0o600); err != nil {
-		return in, func() {}, err
+		return err
 	}
-	if err := os.Rename(tmp, in.file); err != nil {
+	if err := os.Rename(tmp, path); err != nil {
 		os.Remove(tmp)
-		return in, func() {}, err
+		return err
 	}
-	return in, func() { os.Remove(in.file) }, nil
+	return nil
 }
 
 // Running returns the instances that answer, oldest first. Records of
@@ -110,7 +159,12 @@ func Running(ctx context.Context) []Instance {
 			continue
 		}
 		if in.NetNS != here {
-			continue // another container's: unreachable from here
+			// Another container's: unreachable from here, so only its
+			// heartbeat says whether it's still there.
+			if fi, err := os.Stat(f); err == nil && time.Since(fi.ModTime()) > staleAfter {
+				os.Remove(f)
+			}
+			continue
 		}
 		in.file = f
 		wg.Add(1)

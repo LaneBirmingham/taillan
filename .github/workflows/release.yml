@@ -46,6 +46,8 @@ jobs:
         run: gh release create "$TAG" dist/* --generate-notes --title "TailLAN $TAG"
 
   # The container image (docs/server.md), for linux/amd64 and arm64.
+  # The first push creates the ghcr.io package as private: make it
+  # public once in its package settings, or "docker pull" fails.
   image:
     needs: release  # only publish an image for a tag that released
     runs-on: ubuntu-latest
@@ -74,7 +76,9 @@ jobs:
           # Pre-releases (v1.2.0-rc.1) don't move "latest".
           [[ "$TAG" == *-* ]] || tags+=(--tag "$image:latest")
           echo "$GH_TOKEN" | docker login ghcr.io --username "$ACTOR" --password-stdin
-          docker buildx create --use
+          # BuildKit pinned by digest, like the base images.
+          docker buildx create --use \
+            --driver-opt image=moby/buildkit:v0.34.2@sha256:c5f8862f52499773af85bc07695b2379ef08e8002352b0df2c4864c91d78dabe
           docker buildx build --platform linux/amd64,linux/arm64 \
             --build-arg VERSION="$TAG" \
             --build-arg DOWNLOAD_URL="https://github.com/$REPO/releases/latest" \
