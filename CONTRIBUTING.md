@@ -18,3 +18,4 @@ Not sure of the ports? Open a [game request](../../issues/new?template=game-requ
 - Game-specific automation goes in a helper: [docs/helpers.md](docs/helpers.md).
 - Keep player-facing text short and plain, and keep the security boundaries described in [AGENTS.md](AGENTS.md#code-conventions).
 - Run `make fmt vet test` before opening a pull request.
+- Title pull requests (and squash-merge commits) as [Conventional Commits](https://www.conventionalcommits.org/): `feat: add Valheim`, `fix(ui): ...`, `feat!: ...` for breaking changes. Releases and the changelog are built from them; `docs:`, `ci:`, `chore:` and similar don't trigger a release.

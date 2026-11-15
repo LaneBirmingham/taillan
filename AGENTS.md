@@ -38,4 +38,4 @@ Only when JSON can't express it. See [docs/helpers.md](docs/helpers.md) and `int
 
 ## Commits
 
-Don't commit unless asked. Commits carry only the configured git user: no AI co-author trailers or "generated with" footers.
+Don't commit unless asked. Use [Conventional Commits](https://www.conventionalcommits.org/) (`feat:`, `fix:`, `docs:`, `feat!:` for breaking): release-please builds versions and the changelog from them. Commits carry only the configured git user: no AI co-author trailers or "generated with" footers.
