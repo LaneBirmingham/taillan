@@ -15,7 +15,6 @@ import (
 	"sync"
 	"time"
 
-	psnet "github.com/shirou/gopsutil/v4/net"
 	"github.com/shirou/gopsutil/v4/process"
 )
 
@@ -43,7 +42,7 @@ func (s Socket) Loopback() bool {
 // Some processes may be unnamed if the OS won't say (other users'
 // processes, on some systems).
 func Listening(ctx context.Context) ([]Socket, error) {
-	conns, err := psnet.ConnectionsWithoutUidsWithContext(ctx, "inet")
+	conns, err := connections(ctx)
 	if err != nil {
 		return nil, err
 	}

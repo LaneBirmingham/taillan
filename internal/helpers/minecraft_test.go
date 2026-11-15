@@ -2,12 +2,14 @@ package helpers
 
 import (
 	"context"
+	"errors"
 	"net"
 	"testing"
 	"time"
 
 	"golang.org/x/net/ipv4"
 
+	"github.com/LaneBirmingham/taillan/internal/portscan"
 	"github.com/LaneBirmingham/taillan/internal/profile"
 )
 
@@ -23,11 +25,56 @@ func TestParseMCAnnounce(t *testing.T) {
 	}
 }
 
-// TestMinecraftHostDetects sends an Open-to-LAN announcement like
-// Minecraft does and checks the host helper retargets the game port.
+func TestMCPortOwner(t *testing.T) {
+	socks := []portscan.Socket{
+		{Proto: "tcp", Port: 53421, Process: "javaw.exe"},
+		{Proto: "tcp", Port: 22, Process: "sshd"},
+		{Proto: "udp", Port: 4445, Process: "java"},
+		{Proto: "tcp", Port: 25565, Process: "taillan", Self: true},
+	}
+	if err := mcPortOwner(socks, 53421); err != nil {
+		t.Errorf("java listener rejected: %v", err)
+	}
+	for _, port := range []uint16{22, 4445, 25565, 9999} {
+		if err := mcPortOwner(socks, port); err == nil {
+			t.Errorf("port %d accepted as a Minecraft world", port)
+		}
+	}
+}
+
+func TestMCSafeName(t *testing.T) {
+	cases := map[string]string{
+		"Lane":                "Lane",
+		"":                    "Friend",
+		"x[/MOTD][AD]22[/AD]": "x/MOTDAD22/AD",
+		"[]":                  "Friend",
+		"a\nb":                "ab",
+	}
+	for in, want := range cases {
+		got := mcSafeName(in)
+		if got != want {
+			t.Errorf("mcSafeName(%q) = %q, want %q", in, got, want)
+		}
+		if _, port, ok := parseMCAnnounce("[MOTD]" + got + "'s world[/MOTD][AD]40000[/AD]"); !ok || port != 40000 {
+			t.Errorf("name %q changes the advertised port: %d %v", in, port, ok)
+		}
+	}
+}
+
+// TestMinecraftHostDetects sends Open-to-LAN announcements like
+// Minecraft does and checks the host helper retargets the game port,
+// but only to a port that passes mcCheckPort.
 func TestMinecraftHostDetects(t *testing.T) {
 	if testing.Short() {
 		t.Skip("uses multicast")
+	}
+	check := mcCheckPort
+	defer func() { mcCheckPort = check }()
+	mcCheckPort = func(_ context.Context, port uint16) error {
+		if port == 53421 {
+			return nil
+		}
+		return errors.New("not Minecraft")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -57,6 +104,8 @@ func TestMinecraftHostDetects(t *testing.T) {
 	for {
 		for _, ifi := range ifs {
 			pc.SetMulticastInterface(&ifi)
+			// A forged announcement for another port first: it must be ignored.
+			pc.WriteTo([]byte("[MOTD]Fake[/MOTD][AD]22[/AD]"), nil, mcLANGroup)
 			pc.WriteTo([]byte("[MOTD]Lane - World[/MOTD][AD]53421[/AD]"), nil, mcLANGroup)
 		}
 		select {

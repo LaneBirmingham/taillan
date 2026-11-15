@@ -69,6 +69,7 @@ Both methods run in their own goroutine and must return when `ctx` is cancelled 
 ## Rules
 
 - **Stay on this machine.** Helpers run with the player's permissions. Only touch the local machine and the game's own traffic, never open new ports to the network, and never act on data from a friend beyond what the game itself would do.
+- **Don't trust LAN packets.** Anyone on the LAN (or another user of the computer) can send broadcast and multicast packets with a forged source address. Check what one claims against this machine before acting on it, as `minecraft-lan` checks that an announced port belongs to a Java process.
 - **Fail soft.** If something doesn't work (a socket is busy, the game isn't running), `Logf` it and return or keep waiting. Players can always fall back to typing the address, so never block or crash a session.
 - **Be quiet.** Use `Note` once for something the player should know ("Listed under LAN worlds"), not for progress.
 - **Don't rely on the host's code.** A friend may run an older TailLAN without your helper: unknown helper names are skipped with a log line, so the game must still work through the plain steps.
