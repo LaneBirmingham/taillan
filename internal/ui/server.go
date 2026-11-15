@@ -56,6 +56,39 @@ type App struct {
 	viewers int
 	lastUI  time.Time
 	hostCfg *session.HostConfig
+	// starting is set while a host or join session is being set up
+	// (that takes seconds), so a second request can't start another
+	// one alongside it. stopping asks the one being set up to stop as
+	// soon as it's ready.
+	starting, stopping bool
+}
+
+// claimStart reserves the single session slot, or says why it's taken.
+func (a *App) claimStart() error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.starting {
+		return errors.New("already starting a game; wait a moment")
+	}
+	if a.host != nil || (a.join != nil && !a.join.Ended()) {
+		return errors.New("stop the current session first")
+	}
+	a.starting, a.stopping, a.ended, a.join = true, false, nil, nil
+	return nil
+}
+
+// finishStart releases the slot claimed by claimStart. It reports
+// whether the session should keep running (nobody stopped it while it
+// was starting) and, if so, records it with set while still locked.
+func (a *App) finishStart(set func()) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	keep := !a.stopping
+	a.starting, a.stopping = false, false
+	if keep && set != nil {
+		set()
+	}
+	return keep
 }
 
 // NewApp prepares the backend.
@@ -99,7 +132,7 @@ func (a *App) Serve(ctx context.Context, ln net.Listener) error {
 func (a *App) Idle(d time.Duration) bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	busy := a.host != nil || (a.join != nil && !a.join.Ended())
+	busy := a.starting || a.host != nil || (a.join != nil && !a.join.Ended())
 	return !busy && a.viewers == 0 && time.Since(a.lastUI) > d
 }
 
@@ -108,6 +141,7 @@ func (a *App) Shutdown() {
 	a.mu.Lock()
 	h, j := a.host, a.join
 	a.host, a.join = nil, nil
+	a.stopping = a.starting
 	a.mu.Unlock()
 	if h != nil {
 		h.Stop()
@@ -414,13 +448,9 @@ func (a *App) startHost(r *http.Request) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	a.mu.Lock()
-	if a.host != nil || (a.join != nil && !a.join.Ended()) {
-		a.mu.Unlock()
-		return nil, errors.New("stop the current session first")
+	if err := a.claimStart(); err != nil {
+		return nil, err
 	}
-	a.ended, a.join = nil, nil
-	a.mu.Unlock()
 	cfg := session.HostConfig{
 		Profile:  p,
 		TargetIP: strings.TrimSpace(req.TargetIP),
@@ -432,12 +462,14 @@ func (a *App) startHost(r *http.Request) (any, error) {
 	}
 	h, err := session.StartHost(r.Context(), cfg)
 	if err != nil {
+		a.finishStart(nil)
 		a.Log.Logf("Couldn't start sharing: %v", err)
 		return nil, err
 	}
-	a.mu.Lock()
-	a.host, a.hostCfg = h, &cfg
-	a.mu.Unlock()
+	if !a.finishStart(func() { a.host, a.hostCfg = h, &cfg }) {
+		h.Stop()
+		return nil, errors.New("sharing was stopped before it started")
+	}
 	return h.Status(), nil
 }
 
@@ -498,6 +530,7 @@ func (a *App) stopHost(*http.Request) (any, error) {
 	a.mu.Lock()
 	h := a.host
 	a.host = nil
+	a.stopping = a.starting
 	a.mu.Unlock()
 	if h != nil {
 		h.Stop()
@@ -611,13 +644,9 @@ func (a *App) startJoin(r *http.Request) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	a.mu.Lock()
-	if a.host != nil || (a.join != nil && !a.join.Ended()) {
-		a.mu.Unlock()
-		return nil, errors.New("stop the current session first")
+	if err := a.claimStart(); err != nil {
+		return nil, err
 	}
-	a.ended, a.join = nil, nil
-	a.mu.Unlock()
 	j, err := session.StartJoin(session.JoinConfig{
 		Invite:   inv,
 		Profile:  p,
@@ -628,12 +657,14 @@ func (a *App) startJoin(r *http.Request) (any, error) {
 		Log:      a.Log,
 	})
 	if err != nil {
+		a.finishStart(nil)
 		a.Log.Logf("Couldn't join: %v", err)
 		return nil, err
 	}
-	a.mu.Lock()
-	a.join = j
-	a.mu.Unlock()
+	if !a.finishStart(func() { a.join = j }) {
+		j.Stop()
+		return nil, errors.New("left the game before it started")
+	}
 	return j.Status(), nil
 }
 
@@ -641,6 +672,7 @@ func (a *App) stopJoin(*http.Request) (any, error) {
 	a.mu.Lock()
 	j := a.join
 	a.join, a.ended = nil, nil
+	a.stopping = a.starting
 	a.mu.Unlock()
 	if j != nil {
 		j.Stop()

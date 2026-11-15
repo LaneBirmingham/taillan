@@ -130,6 +130,8 @@ func Decode(text string) (*Invite, error) {
 	if !strings.HasPrefix(inv.Addr, "tc") {
 		return nil, errors.New("invite has no host address")
 	}
+	// Same limit as the name a host can set for themselves.
+	inv.HostName = clip(strings.TrimSpace(inv.HostName), 40)
 	if _, err := inv.Profile(); err != nil {
 		return nil, fmt.Errorf("invite has bad game info: %v", err)
 	}

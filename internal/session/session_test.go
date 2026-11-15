@@ -1,8 +1,10 @@
 package session
 
 import (
+	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"net"
 	"os"
@@ -11,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/tailscale/tailcat"
 	"tailscale.com/types/key"
 
 	"github.com/LaneBirmingham/taillan/internal/invite"
@@ -26,6 +29,59 @@ func TestRender(t *testing.T) {
 	got := Render("Ask {{hostname}}; type {{connect}} then port {{port2}}", vars)
 	if want := "Ask Sam; type 127.0.0.1:7778 then port 8888"; got != want {
 		t.Errorf("Render = %q, want %q", got, want)
+	}
+}
+
+// TestCtlScannerLimit checks a peer can't make us buffer an endless
+// control line.
+func TestCtlScannerLimit(t *testing.T) {
+	sc := newCtlScanner(strings.NewReader(`{"t":"ping","n":1}` + "\n" + strings.Repeat("x", 1<<20)))
+	if !sc.Scan() || sc.Text() != `{"t":"ping","n":1}` {
+		t.Fatalf("normal line not read: %q, %v", sc.Text(), sc.Err())
+	}
+	if sc.Scan() {
+		t.Fatalf("read a %d-byte line", len(sc.Bytes()))
+	}
+	if !errors.Is(sc.Err(), bufio.ErrTooLong) {
+		t.Errorf("err = %v, want ErrTooLong", sc.Err())
+	}
+}
+
+// TestJoinAllowed checks the filter on "lan" ports: this computer
+// only, unless the player allowed their LAN, and foreign packets don't
+// make us re-read our addresses every time.
+func TestJoinAllowed(t *testing.T) {
+	j := &Join{}
+	j.refreshLocalIPs()
+	foreign := net.ParseIP("192.0.2.7") // TEST-NET-1, never ours
+	for _, ip := range []string{"127.0.0.1", "::1"} {
+		if !j.allowed(net.ParseIP(ip)) {
+			t.Errorf("%s rejected", ip)
+		}
+	}
+	addrs, _ := net.InterfaceAddrs()
+	for _, a := range addrs {
+		if ipn, ok := a.(*net.IPNet); ok && !ipn.IP.IsLoopback() {
+			if !j.allowed(ipn.IP) {
+				t.Errorf("own address %s rejected", ipn.IP)
+			}
+			break
+		}
+	}
+	at := j.localIPsAt.Load()
+	if j.allowed(foreign) {
+		t.Error("LAN address allowed without AllowLAN")
+	}
+	if j.localIPsAt.Load() != at {
+		t.Error("re-read addresses again right after a refresh")
+	}
+	j.localIPsAt.Store(time.Now().Add(-time.Minute).UnixNano())
+	if j.allowed(foreign) || j.localIPsAt.Load() == at {
+		t.Error("stale address list not refreshed, or foreign address allowed")
+	}
+	j.cfg.AllowLAN = true
+	if !j.allowed(foreign) {
+		t.Error("LAN address rejected with AllowLAN")
 	}
 }
 
@@ -143,6 +199,36 @@ func TestHostJoinEndToEnd(t *testing.T) {
 		t.Fatal("no UDP echo through the tunnel")
 	}
 
+	// Only the game's declared ports are served: another program on
+	// the host's machine must not be reachable through the tunnel.
+	other, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer other.Close()
+	go func() {
+		for {
+			c, err := other.Accept()
+			if err != nil {
+				return
+			}
+			go func() { io.Copy(c, c); c.Close() }()
+		}
+	}()
+	otherPort := uint16(other.Addr().(*net.TCPAddr).Port)
+	dctx, dcancel := context.WithTimeout(ctx, 5*time.Second)
+	oc, err := j.cl.DialTCPPort(dctx, otherPort)
+	dcancel()
+	if err == nil {
+		oc.SetDeadline(time.Now().Add(3 * time.Second))
+		oc.Write([]byte("x"))
+		n, rerr := oc.Read(buf)
+		oc.Close()
+		if rerr == nil && n > 0 {
+			t.Fatalf("reached undeclared port %d through the tunnel", otherPort)
+		}
+	}
+
 	waitFor(t, ctx, "host sees friend by name", func() bool {
 		for _, f := range h.Status().Friends {
 			if f.Name == "Joiny" && f.Online && f.App == "TailLAN" {
@@ -153,6 +239,45 @@ func TestHostJoinEndToEnd(t *testing.T) {
 	})
 	if g := h.Status().Groups[0]; g.Listening != "yes" {
 		t.Errorf("host says game listening = %q, want yes", g.Listening)
+	}
+
+	// Removing a friend ends their session and locks the room, so the
+	// invite can't bring them straight back under a new key.
+	j2, err := StartJoin(JoinConfig{Invite: inv, Profile: jp, Name: "Kicky", Key: key.NewNode(), Log: log})
+	if err != nil {
+		t.Fatalf("StartJoin (second friend): %v", err)
+	}
+	defer j2.Stop()
+	var kickID string
+	waitFor(t, ctx, "host sees second friend", func() bool {
+		for _, f := range h.Status().Friends {
+			if f.Name == "Kicky" && f.Online {
+				kickID = f.ID
+				return true
+			}
+		}
+		return false
+	})
+	if err := h.Kick(kickID); err != nil {
+		t.Fatalf("Kick: %v", err)
+	}
+	waitFor(t, ctx, "removed friend's session ends", j2.Ended)
+	if m := j2.Status().Message; !strings.Contains(m, "removed") {
+		t.Errorf("removed friend's message = %q", m)
+	}
+	if !h.Status().Locked {
+		t.Error("removing a friend didn't lock the room")
+	}
+	fresh := &tailcat.Client{Server: tailcat.Addr(inv.Addr), Key: key.NewNode(), Logf: func(string, ...any) {}}
+	defer fresh.Close()
+	pctx, pcancel := context.WithTimeout(ctx, 8*time.Second)
+	_, err = fresh.Ping(pctx)
+	pcancel()
+	if err == nil {
+		t.Error("a new key got in after the room was locked")
+	}
+	if j.Ended() {
+		t.Error("removing one friend ended another's session")
 	}
 
 	// Host stopping ends the joiner's session with a reason.

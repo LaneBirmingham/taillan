@@ -1,0 +1,8 @@
+# Keeps the commit-pinned GitHub Actions up to date. Go modules are
+# left out: updating them also needs `make notices`.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly

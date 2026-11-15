@@ -1,12 +1,16 @@
 package ui
 
 import (
+	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/LaneBirmingham/taillan/internal/config"
+	"github.com/LaneBirmingham/taillan/internal/invite"
 	"github.com/LaneBirmingham/taillan/internal/profile"
 	"github.com/LaneBirmingham/taillan/internal/session"
 )
@@ -96,5 +100,51 @@ func TestResolveGame(t *testing.T) {
 	}
 	if _, err := a.ResolveGame("not-a-game", "", "", ""); err == nil {
 		t.Error("unknown game accepted")
+	}
+}
+
+// TestOneSessionAtATime checks that while a session is starting (which
+// takes seconds), no second one can start alongside it, and that
+// stopping during startup stops the session once it's up instead of
+// leaving it running unseen.
+func TestOneSessionAtATime(t *testing.T) {
+	a, srv := newTestApp(t)
+	code, err := invite.New("tc-test", "Sam", a.Store.Get("valheim")).Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.claimStart(); err != nil {
+		t.Fatal(err)
+	}
+	if a.Idle(-time.Second) {
+		t.Error("app idle while a session is starting")
+	}
+	body, _ := json.Marshal(map[string]string{"code": code})
+	req, _ := http.NewRequest("POST", srv.URL+"/api/join", strings.NewReader(string(body)))
+	req.AddCookie(&http.Cookie{Name: "taillan", Value: a.Token})
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	msg, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest || !strings.Contains(string(msg), "already starting") {
+		t.Errorf("second session while starting: %d %s", resp.StatusCode, msg)
+	}
+	if err := a.claimStart(); err == nil {
+		t.Error("claimed the session slot twice")
+	}
+
+	// Stop while starting: the session that finishes starting is
+	// not kept.
+	a.Shutdown()
+	if a.finishStart(func() { t.Error("stopped session was recorded") }) {
+		t.Error("finishStart kept a session stopped during startup")
+	}
+	if err := a.claimStart(); err != nil {
+		t.Errorf("slot not released: %v", err)
+	}
+	if !a.finishStart(nil) {
+		t.Error("finishStart dropped a session nobody stopped")
 	}
 }

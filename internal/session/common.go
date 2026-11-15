@@ -12,8 +12,10 @@
 package session
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
+	"io"
 	"strconv"
 	"strings"
 	"sync"
@@ -71,6 +73,27 @@ type ctlMsg struct {
 	Path    string  `json:"path,omitempty"` // client's view of the path
 	Reason  string  `json:"reason,omitempty"`
 	Game    string  `json:"game,omitempty"`
+}
+
+// maxCtlLine bounds one control message. Real messages are well under
+// 1 KB; the limit stops the other side from making us buffer an
+// endless line (both peers are only as trusted as the invite).
+const maxCtlLine = 4 << 10
+
+// newCtlScanner reads control messages one line at a time, failing on
+// a line longer than maxCtlLine.
+func newCtlScanner(r io.Reader) *bufio.Scanner {
+	s := bufio.NewScanner(r)
+	s.Buffer(make([]byte, 0, 512), maxCtlLine)
+	return s
+}
+
+// clip truncates s to at most n runes.
+func clip(s string, n int) string {
+	if r := []rune(s); len(r) > n {
+		return string(r[:n])
+	}
+	return s
 }
 
 func writeMsg(w interface{ Write([]byte) (int, error) }, m ctlMsg) error {

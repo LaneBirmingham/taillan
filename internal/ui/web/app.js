@@ -407,7 +407,9 @@ function viewHosting(s) {
             h("td", {}, f.online ? pathBadge(f.path) : h("span", { class: "badge" }, "Left")),
             h("td", { class: "small muted" }, f.online && f.since ? "since " + new Date(f.since).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : ""),
             h("td", { style: "text-align:right" }, h("button", { class: "btn small danger", onclick: (e) => {
-              if (confirm("Remove " + f.name + " from this session? They won't be able to rejoin until you share again.")) busy(e.currentTarget, () => post("/api/host/kick", { id: f.id }));
+              const msg = "Remove " + f.name + "? This also locks the room, so only friends who are here now can reconnect." +
+                (s.keepCode ? " Your kept invite code still works next time: use Retire invite in the Games tab to keep them out for good." : "");
+              if (confirm(msg)) busy(e.currentTarget, () => post("/api/host/kick", { id: f.id }));
             } }, "Remove"))))))),
     h("details", { class: "card" },
       h("summary", {}, "Details for tinkerers"),

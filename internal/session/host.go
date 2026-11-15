@@ -1,7 +1,6 @@
 package session
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -82,7 +81,6 @@ type friend struct {
 	since         time.Time
 	lastCtl       time.Time
 	rttMs         float64
-	clientPath    string
 	ctl           net.Conn
 	online        bool
 }
@@ -180,9 +178,14 @@ func StartHost(ctx context.Context, cfg HostConfig) (*Host, error) {
 		return nil, friendlyStartErr(err)
 	}
 	var region tailcfg.DERPRegionID
+	// A kept invite names its relay region; if that region has been
+	// retired, the code has to change, and the new region is saved so
+	// it stays the same again from now on.
+	regionGone := false
 	if saved != nil && dm.Regions[tailcfg.DERPRegionID(saved.RegionID)] != nil {
 		region = tailcfg.DERPRegionID(saved.RegionID)
 	} else {
+		regionGone = saved != nil
 		region, err = tailcat.PickBestRegion(sctx, dm)
 		if err != nil || dm.Regions[region] == nil {
 			logf("couldn't measure relay latency (%v); using a default relay", err)
@@ -209,11 +212,14 @@ func StartHost(ctx context.Context, cfg HostConfig) (*Host, error) {
 	}
 	ci.Region, ci.RegionID = nil, region
 	h.addr = ci.Addr()
-	if cfg.KeepCode && saved == nil {
+	if cfg.KeepCode && (saved == nil || regionGone) {
 		kb, _ := srv.Key.MarshalText()
 		pb, _ := srv.PresharedKey.MarshalText()
 		if err := config.SaveHostKey(h.keepName, &config.HostKey{Key: string(kb), PSK: string(pb), RegionID: int(region)}); err != nil {
 			logf("couldn't save invite for next time: %v", err)
+		}
+		if regionGone {
+			logf("The relay server your saved invite used is gone, so the invite code changed. Send your friends the new one.")
 		}
 	}
 	code, err := invite.New(string(h.addr), cfg.HostName, p).Encode()
@@ -295,6 +301,10 @@ func (h *Host) Invite() string { return h.invite }
 // Addr returns the raw tailcat address.
 func (h *Host) Addr() tailcat.Addr { return h.addr }
 
+// byeFlush is how long to let a "bye" control message reach a friend
+// before tearing down the tunnel under it.
+const byeFlush = 150 * time.Millisecond
+
 // Stop ends the session, telling connected friends first.
 func (h *Host) Stop() {
 	h.mu.Lock()
@@ -314,7 +324,7 @@ func (h *Host) Stop() {
 		c.SetWriteDeadline(time.Now().Add(time.Second))
 		writeMsg(c, ctlMsg{T: "bye", Reason: "The host stopped sharing."})
 	}
-	time.Sleep(150 * time.Millisecond) // let the byes flush through the tunnel
+	time.Sleep(byeFlush) // let the byes flush through the tunnel
 	h.cancel()
 	h.srv.Close()
 	h.cfg.Log.Logf("Stopped sharing %s", h.cfg.Profile.Name)
@@ -342,6 +352,11 @@ func (h *Host) Kick(id string) error {
 	}
 	h.mu.Lock()
 	h.banned[k] = true
+	// The ban is by key, and anyone holding the invite can make a new
+	// key, so removing someone also locks the room: only friends who
+	// are already here can come back.
+	wasLocked := h.locked
+	h.locked = true
 	f := h.friends[k]
 	var ctl net.Conn
 	name := shortKey(k)
@@ -356,10 +371,17 @@ func (h *Host) Kick(id string) error {
 	if ctl != nil {
 		ctl.SetWriteDeadline(time.Now().Add(time.Second))
 		writeMsg(ctl, ctlMsg{T: "bye", Reason: "The host removed you from the game."})
+		// Disconnecting drops the friend's traffic at once, so give the
+		// bye time to arrive; otherwise their TailLAN never learns it was
+		// removed and keeps trying to reconnect.
+		time.Sleep(byeFlush)
 		ctl.Close()
 	}
 	h.srv.DisconnectClient(k)
 	h.cfg.Log.Logf("Removed %s from the session", name)
+	if !wasLocked {
+		h.cfg.Log.Logf("Room locked so they can't come back with the invite. Unlock it to let new friends in.")
+	}
 	return nil
 }
 
@@ -473,20 +495,17 @@ func (h *Host) handleControl(c net.Conn) {
 	if !ok {
 		return
 	}
-	r := bufio.NewReader(c)
+	sc := newCtlScanner(c)
 	c.SetReadDeadline(time.Now().Add(15 * time.Second))
-	line, err := r.ReadBytes('\n')
-	if err != nil {
+	if !sc.Scan() {
 		return
 	}
 	var hello ctlMsg
-	if json.Unmarshal(line, &hello) != nil || hello.T != "hello" {
+	if json.Unmarshal(sc.Bytes(), &hello) != nil || hello.T != "hello" {
 		return
 	}
-	name := strings.TrimSpace(hello.Name)
-	if r := []rune(name); len(r) > 40 {
-		name = string(r[:40])
-	}
+	name := clip(strings.TrimSpace(hello.Name), 40)
+	version := clip(hello.Version, 40)
 	h.mu.Lock()
 	if h.banned[k] || h.stopped {
 		h.mu.Unlock()
@@ -500,7 +519,7 @@ func (h *Host) handleControl(c net.Conn) {
 	if f.ctl != nil {
 		f.ctl.Close() // a reconnect replaces the old channel
 	}
-	f.name, f.version, f.ctl, f.online, f.lastCtl = name, hello.Version, c, true, time.Now()
+	f.name, f.version, f.ctl, f.online, f.lastCtl = name, version, c, true, time.Now()
 	h.mu.Unlock()
 	h.cfg.Log.Logf("%s joined", displayName(name, k))
 	writeMsg(c, ctlMsg{T: "welcome", Name: h.cfg.HostName, Version: Version, Game: h.cfg.Profile.Name})
@@ -515,18 +534,17 @@ func (h *Host) handleControl(c net.Conn) {
 	}()
 	for {
 		c.SetReadDeadline(time.Now().Add(20 * time.Second))
-		line, err := r.ReadBytes('\n')
-		if err != nil {
+		if !sc.Scan() {
 			return
 		}
 		var m ctlMsg
-		if json.Unmarshal(line, &m) != nil {
+		if json.Unmarshal(sc.Bytes(), &m) != nil {
 			continue
 		}
 		switch m.T {
 		case "ping":
 			h.mu.Lock()
-			f.lastCtl, f.rttMs, f.clientPath = time.Now(), m.RTT, m.Path
+			f.lastCtl, f.rttMs = time.Now(), m.RTT
 			h.mu.Unlock()
 			c.SetWriteDeadline(time.Now().Add(5 * time.Second))
 			if writeMsg(c, ctlMsg{T: "pong", N: m.N}) != nil {

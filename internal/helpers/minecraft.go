@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"golang.org/x/net/ipv4"
+
+	"github.com/LaneBirmingham/taillan/internal/portscan"
 )
 
 // Minecraft Java Edition announces "Open to LAN" worlds by multicasting
@@ -51,6 +53,7 @@ func (minecraftLAN) Host(ctx context.Context, env *HostEnv) {
 	}
 	local := localIPs()
 	var lastPort uint16
+	rejected := map[uint16]time.Time{} // ports that failed mcCheckPort, and when
 	buf := make([]byte, 1500)
 	for {
 		n, src, err := c.ReadFromUDP(buf)
@@ -67,11 +70,65 @@ func (minecraftLAN) Host(ctx context.Context, env *HostEnv) {
 				continue // someone else's world on the LAN
 			}
 		}
-		if port != lastPort {
-			lastPort = port
-			env.SetTarget(0, port, fmt.Sprintf("Found your LAN world %q on port %d", motd, port))
+		if port == lastPort {
+			continue
+		}
+		if at, ok := rejected[port]; ok && time.Since(at) < mcRecheck {
+			continue
+		}
+		if err := mcCheckPort(ctx, port); err != nil {
+			if _, ok := rejected[port]; !ok {
+				env.Logf("minecraft-lan: ignoring a LAN world announcement for port %d (%v). If that's your world, type its port on the host screen.", port, err)
+			}
+			rejected[port] = time.Now()
+			continue
+		}
+		lastPort = port
+		env.SetTarget(0, port, fmt.Sprintf("Found your LAN world %q on port %d", motd, port))
+	}
+}
+
+// mcRecheck is how long a port that failed mcCheckPort is ignored
+// before it's checked again (Minecraft re-announces every 1.5s).
+const mcRecheck = 15 * time.Second
+
+// mcCheckPort confirms that an announced port is a Minecraft world on
+// this machine before the shared port is pointed at it. Announcements
+// are plain UDP, so their source address can be forged by anyone on the
+// LAN (or another user of this computer); without this check a fake one
+// could point friends at SSH, Remote Desktop or a local-only web page.
+// A variable so tests can replace it.
+var mcCheckPort = func(ctx context.Context, port uint16) error {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	socks, err := portscan.Listening(ctx)
+	if err != nil {
+		return fmt.Errorf("can't see which program uses it: %v", err)
+	}
+	return mcPortOwner(socks, port)
+}
+
+// mcPortOwner checks that a Java (Minecraft) process listens on TCP
+// port. Minecraft Java Edition always runs in a JVM: java, javaw.exe.
+func mcPortOwner(socks []portscan.Socket, port uint16) error {
+	found := portscan.Find(socks, "tcp", port)
+	if len(found) == 0 {
+		return fmt.Errorf("nothing is listening on TCP %d", port)
+	}
+	owner := ""
+	for _, s := range found {
+		n := strings.ToLower(s.Process)
+		if !s.Self && (strings.Contains(n, "java") || strings.Contains(n, "minecraft")) {
+			return nil
+		}
+		if owner == "" && s.Process != "" {
+			owner = s.Process
 		}
 	}
+	if owner == "" {
+		owner = "an unknown program"
+	}
+	return fmt.Errorf("it belongs to %s, not Minecraft", owner)
 }
 
 // Join re-announces the forwarded world locally so it shows up in
@@ -88,10 +145,7 @@ func (minecraftLAN) Join(ctx context.Context, env *JoinEnv) {
 	pc := ipv4.NewPacketConn(c)
 	pc.SetMulticastLoopback(true)
 	pc.SetMulticastTTL(1)
-	name := env.HostName
-	if name == "" {
-		name = "Friend"
-	}
+	name := mcSafeName(env.HostName)
 	t := time.NewTicker(1500 * time.Millisecond)
 	defer t.Stop()
 	noted := false
@@ -122,6 +176,25 @@ func (minecraftLAN) Join(ctx context.Context, env *JoinEnv) {
 		case <-t.C:
 		}
 	}
+}
+
+// mcSafeName makes the host's name (from the invite, so from someone
+// else) safe to put in an announcement: brackets would let it end the
+// MOTD early and advertise a different port.
+func mcSafeName(n string) string {
+	n = strings.Map(func(r rune) rune {
+		if r == '[' || r == ']' || r < ' ' {
+			return -1
+		}
+		return r
+	}, n)
+	if r := []rune(strings.TrimSpace(n)); len(r) > 40 {
+		n = string(r[:40])
+	}
+	if n = strings.TrimSpace(n); n == "" {
+		n = "Friend"
+	}
+	return n
 }
 
 func parseMCAnnounce(s string) (motd string, port uint16, ok bool) {
